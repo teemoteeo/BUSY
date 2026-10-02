@@ -1,0 +1,8 @@
+.DS_Store
+Build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.zip
+Claude outputs/
+BUSY-consegna.md
