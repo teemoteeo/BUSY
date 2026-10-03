@@ -1,130 +1,203 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import ServiceManagement
 
 /// Editor delle regole: segni le app installate come verdi/rosse e aggiungi
 /// siti incollando un link. Ogni modifica si salva subito in rules.json.
 struct RulesEditorView: View {
-    // Niente @ObservedObject: la finestra non mostra lo stato live, e ogni ridisegno
-    // dei Picker segmentati perde memoria su macOS 26. Serve solo rulesError.
+    // Niente @ObservedObject: la finestra non mostra lo stato live. Serve solo rulesError.
     let sampler: Sampler
+    /// Scelta dalla sidebar della finestra.
+    let tab: Tab
+    /// Clic su un'app o un sito: apre le sue statistiche nel Recap.
+    var openStats: (String) -> Void = { _ in }
+    /// Siti mostrati anche senza regola né visite (procedura guidata: i più comuni).
+    var suggestedSites: [String] = []
 
-    private enum Tab: String, CaseIterable, Identifiable {
-        case apps = "App", sites = "Siti"
+    enum Tab { case apps, sites }
+
+    private enum Filter: String, CaseIterable, Identifiable {
+        case all = "Tutte", green = "Verdi", red = "Rosse", unmarked = "Non segnate"
         var id: String { rawValue }
+        func includes(_ category: Category?) -> Bool {
+            switch self {
+            case .all: return true
+            case .green: return category == .green
+            case .red: return category == .red
+            case .unmarked: return category == nil
+            }
+        }
     }
 
-    private struct DomainRule: Identifiable, Equatable {
-        var id: String { domain }
-        let domain: String
-        var category: Category
-    }
+    /// Giorni mostrati nella colonnina di ogni riga e usati per l'ordinamento.
+    private static let usageDays = 30
 
-    @State private var tab: Tab = .apps
     @State private var apps: [InstalledApp] = []
     @State private var search = ""
+    @State private var filter: Filter = .all
     @State private var bundleRules: [String: Category] = [:]
-    @State private var domainRules: [DomainRule] = []
+    /// Regole dei siti per dominio; `domainOrder` tiene l'ordine del file, che conta
+    /// quando due regole si sovrappongono (vince la prima).
+    @State private var siteRules: [String: Category] = [:]
+    @State private var domainOrder: [String] = []
+    /// Siti mostrati: quelli con una regola più quelli visitati senza regola.
+    @State private var sites: [String] = []
+    /// Tempo di ogni giorno degli ultimi 30, per bundle ID (app) e per regola o dominio (siti).
+    @State private var appUsage: [String: [TimeInterval]] = [:]
+    @State private var siteUsage: [String: [TimeInterval]] = [:]
+    @State private var loaded = false
     @State private var newLink = ""
+    @State private var newCategory: Category? = .red
     @State private var linkError: String?
     @State private var saveError: String?
     @State private var rulesError: String?
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @State private var loginError: String?
 
     private var defaultCategory: Category {
         sampler.rules.entries.last(where: { $0.type == .default })?.category ?? .red
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 200)
-
+        VStack(alignment: .leading) {
             switch tab {
             case .apps: appsTab
             case .sites: sitesTab
             }
-
-            // Riquadro come le righe di Impostazioni di Sistema.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Apri all'accensione del Mac")
-                    Spacer()
-                    Toggle("Apri all'accensione del Mac", isOn: Binding(
-                        get: { launchAtLogin },
-                        set: { setLaunchAtLogin($0) }))
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .labelsHidden()
-                }
-                if let loginError { Text(loginError).font(.caption).foregroundStyle(.red) }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
             if let error = saveError ?? rulesError {
-                Text("Regole: \(error)").font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Text("Le modifiche sono attive subito.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Apri rules.json") { sampler.editRules() }
-                    .buttonStyle(.link).font(.caption)
+                Text("Regole: \(error)").font(.caption).foregroundStyle(Theme.red)
             }
         }
-        .padding(20)
-        .frame(minWidth: 520, minHeight: 560)
+        .padding()
+        .frame(minWidth: 520)
         .onAppear(perform: load)
-        // Si può cambiare anche da Impostazioni → Generali → Elementi login.
-        .onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }
         .onReceive(sampler.$rulesError) { rulesError = $0 }
         .task {
-            // Prima le app già verdi/rosse, poi le altre (scan le dà già in ordine alfabetico).
+            let (perApp, perSite) = await loadUsage()
             // Ordine fissato all'apertura: una riga classificata ora non salta via sotto il cursore.
-            let scanned = await InstalledApp.scan(extra: Array(bundleRules.keys))
-            apps = scanned.filter { bundleRules[$0.id] != nil } + scanned.filter { bundleRules[$0.id] == nil }
+            // Prima le più usate, poi quelle con una regola, poi le altre in ordine alfabetico.
+            let scanned = await InstalledApp.scan(extra: Array(bundleRules.keys) + Array(perApp.keys))
+            apps = scanned.enumerated().sorted { a, b in
+                let ua = Self.total(perApp[a.element.id]), ub = Self.total(perApp[b.element.id])
+                if ua != ub { return ua > ub }
+                let ra = bundleRules[a.element.id] != nil, rb = bundleRules[b.element.id] != nil
+                if ra != rb { return ra }
+                return a.offset < b.offset
+            }.map(\.element)
+            appUsage = perApp
+            // Un dominio visitato conta per la regola che lo copre (m.youtube.com → youtube.com).
+            var bySite: [String: [TimeInterval]] = [:]
+            for (domain, days) in perSite {
+                let key = domainOrder.first { domain == $0 || domain.hasSuffix("." + $0) } ?? domain
+                bySite[key] = zip(bySite[key] ?? Array(repeating: 0, count: days.count), days).map(+)
+            }
+            siteUsage = bySite
+            sites = Set(domainOrder).union(bySite.keys).union(suggestedSites).sorted { a, b in
+                let ua = Self.total(bySite[a]), ub = Self.total(bySite[b])
+                if ua != ub { return ua > ub }
+                return a < b
+            }
+            loaded = true
         }
+    }
+
+    private static func total(_ days: [TimeInterval]?) -> TimeInterval { days?.reduce(0, +) ?? 0 }
+
+    /// Ultimi 30 giorni divisi per giorno, una sola query per app e siti insieme.
+    private func loadUsage() async -> (apps: [String: [TimeInterval]], sites: [String: [TimeInterval]]) {
+        let calendar = Calendar.current
+        let now = Date()
+        guard let start = calendar.date(byAdding: .day, value: -(Self.usageDays - 1), to: calendar.startOfDay(for: now)),
+              let recap = try? await sampler.recap(from: start, to: now) else { return ([:], [:]) }
+        let starts = recap.days.map(\.id)
+        var apps: [String: [TimeInterval]] = [:]
+        var sites: [String: [TimeInterval]] = [:]
+        var day = 0
+        for segment in recap.segments where segment.category != .paused {
+            while day + 1 < starts.count && starts[day + 1] <= segment.start { day += 1 }
+            var i = day
+            while i < starts.count && starts[i] < segment.end {
+                let dayEnd = i + 1 < starts.count ? starts[i + 1] : segment.end
+                let overlap = min(segment.end, dayEnd).timeIntervalSince(max(segment.start, starts[i]))
+                if overlap > 0 {
+                    if segment.isSite {
+                        sites[segment.name, default: Array(repeating: 0, count: starts.count)][i] += overlap
+                    } else {
+                        apps[segment.name, default: Array(repeating: 0, count: starts.count)][i] += overlap
+                    }
+                }
+                i += 1
+            }
+        }
+        return (apps, sites)
+    }
+
+    /// Icona, nome, uso degli ultimi 30 giorni e totale: tutta la parte sinistra apre le statistiche.
+    private func usageRow(name: String, help: String, icon: some View, category: Category?,
+                          usage: [TimeInterval]?, pill: some View) -> some View {
+        HStack(spacing: 10) {
+            Button { openStats(help) } label: {
+                HStack(spacing: 10) {
+                    icon.frame(width: 22, height: 22)
+                    Text(name).lineLimit(1)
+                    Spacer(minLength: 8)
+                    UsageSparkline(values: usage ?? Array(repeating: 0, count: Self.usageDays),
+                                   color: category?.color ?? Theme.unknown)
+                        .frame(width: 90, height: 16)
+                    Text(Self.total(usage) > 0 ? Totals.duration(Self.total(usage)) : "—")
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Statistiche di \(name) (\(help))")
+            pill
+        }
+        .padding(.vertical, 1)
     }
 
     // MARK: App
 
-    private var filteredApps: [InstalledApp] {
+    private var searchedApps: [InstalledApp] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         return apps.filter { query.isEmpty || $0.name.lowercased().contains(query) || $0.id.contains(query) }
     }
 
+    private var unmarkedNote: String {
+        switch defaultCategory {
+        case .green: return "Le app non segnate contano come verdi."
+        case .red: return "Le app non segnate contano come rosse."
+        default: return "Le app non segnate restano grigie e non entrano nel rapporto verde/rosso."
+        }
+    }
+
     private var appsTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let searched = searchedApps
+        return VStack(alignment: .leading) {
             TextField("Cerca app", text: $search).textFieldStyle(.roundedBorder)
-            Text("Le app non segnate contano come \(defaultCategory == .green ? "verdi" : "rosse").")
-                .font(.caption).foregroundStyle(.secondary)
-            List(filteredApps) { app in
-                HStack(spacing: 10) {
-                    Image(nsImage: app.icon).resizable().frame(width: 22, height: 22)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(app.name).lineLimit(1)
-                        Text(app.id).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                    }
-                    Spacer()
-                    Picker("", selection: bundleBinding(app.id)) {
-                        Text("Verde").tag(Category?.some(.green))
-                        Text("—").tag(Category?.none)
-                        Text("Rosso").tag(Category?.some(.red))
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 170)
+            HStack(spacing: 6) {
+                ForEach(Filter.allCases) { option in
+                    filterChip(option, count: searched.filter { option.includes(bundleRules[$0.id]) }.count)
                 }
             }
-            if apps.isEmpty { ProgressView().frame(maxWidth: .infinity) }
+            Text("\(unmarkedNote) Ordinate per uso negli ultimi 30 giorni; clic su un'app per le sue statistiche.")
+                .font(.caption).foregroundStyle(.secondary)
+            List(searched.filter { filter.includes(bundleRules[$0.id]) }) { app in
+                usageRow(name: app.name, help: app.id,
+                         icon: Image(nsImage: app.icon).resizable(),
+                         category: bundleRules[app.id], usage: appUsage[app.id],
+                         pill: CategoryPill(selection: bundleBinding(app.id)))
+            }
+            if !loaded { ProgressView().frame(maxWidth: .infinity) }
         }
+    }
+
+    /// Pulsanti a interruttore di sistema: forma e stato selezionato come nelle app Apple.
+    private func filterChip(_ option: Filter, count: Int) -> some View {
+        Toggle(isOn: Binding(get: { filter == option }, set: { if $0 { filter = option } })) {
+            Text("\(option.rawValue) \(count)").monospacedDigit()
+        }
+        .toggleStyle(.button)
+        .controlSize(.small)
     }
 
     private func bundleBinding(_ bundleID: String) -> Binding<Category?> {
@@ -137,41 +210,41 @@ struct RulesEditorView: View {
     // MARK: Siti
 
     private var sitesTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading) {
             HStack {
                 TextField("Incolla un link, es. https://www.youtube.com/…", text: $newLink)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addLink)
-                Button("Aggiungi come rosso", action: addLink)
+                CategoryPill(selection: $newCategory, allowsNone: false)
+                Button("Aggiungi", action: addLink)
                     .disabled(newLink.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if let linkError { Text(linkError).font(.caption).foregroundStyle(.red) }
-            Text("Vale per tutto il sito e i suoi sottodomini (youtube.com include m.youtube.com).")
+            if let linkError { Text(linkError).font(.caption).foregroundStyle(Theme.red) }
+            Text("Vale per tutto il sito e i suoi sottodomini (youtube.com include m.youtube.com). Ci sono anche i siti visitati senza regola, ordinati per uso negli ultimi 30 giorni.")
                 .font(.caption).foregroundStyle(.secondary)
             List {
-                if domainRules.isEmpty { Text("Nessun sito.").foregroundStyle(.secondary) }
-                ForEach($domainRules) { $rule in
-                    HStack {
-                        Circle().fill(rule.category.color).frame(width: 8, height: 8)
-                        Text(rule.domain)
-                        Spacer()
-                        Picker("", selection: $rule.category) {
-                            Text("Verde").tag(Category.green)
-                            Text("Rosso").tag(Category.red)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: 120)
-                        .onChange(of: rule.category) { _, _ in save() }
-                        Button {
-                            domainRules.removeAll { $0.domain == rule.domain }
-                            save()
-                        } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                    }
+                if loaded && sites.isEmpty { Text("Nessun sito.").foregroundStyle(.secondary) }
+                ForEach(sites, id: \.self) { domain in
+                    usageRow(name: domain, help: domain,
+                             icon: ActivityIcon(name: domain),
+                             category: siteRules[domain], usage: siteUsage[domain],
+                             pill: CategoryPill(selection: siteBinding(domain)))
                 }
             }
+            if !loaded { ProgressView().frame(maxWidth: .infinity) }
         }
+    }
+
+    /// "Non segnata" toglie la regola: il sito resta in elenco finché non riapri la pagina.
+    private func siteBinding(_ domain: String) -> Binding<Category?> {
+        Binding(
+            get: { siteRules[domain] },
+            set: {
+                siteRules[domain] = $0
+                if $0 != nil && !domainOrder.contains(domain) { domainOrder.insert(domain, at: 0) }
+                save()
+            }
+        )
     }
 
     private func addLink() {
@@ -180,13 +253,9 @@ struct RulesEditorView: View {
             return
         }
         linkError = nil
-        if let index = domainRules.firstIndex(where: { $0.domain == domain }) {
-            domainRules[index].category = .red
-        } else {
-            domainRules.insert(DomainRule(domain: domain, category: .red), at: 0)
-        }
+        siteBinding(domain).wrappedValue = newCategory
+        if !sites.contains(domain) { sites.insert(domain, at: 0) }
         newLink = ""
-        save()
     }
 
     static func domain(from input: String) -> String? {
@@ -197,35 +266,24 @@ struct RulesEditorView: View {
         return domain
     }
 
-    // MARK: Avvio automatico
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            loginError = nil
-        } catch { loginError = error.localizedDescription }
-        let status = SMAppService.mainApp.status
-        launchAtLogin = status == .enabled
-        if status == .requiresApproval {
-            loginError = "Da approvare in Impostazioni di Sistema → Generali → Elementi login."
-        }
-    }
-
     // MARK: Persistenza
 
     private func load() {
         let entries = sampler.rules.entries
         bundleRules = Dictionary(entries.filter { $0.type == .bundle }.map { ($0.match, $0.category) },
                                  uniquingKeysWith: { first, _ in first })
-        domainRules = entries.filter { $0.type == .domain }
-            .map { DomainRule(domain: $0.match, category: $0.category) }
+        let domains = entries.filter { $0.type == .domain }
+        siteRules = Dictionary(domains.map { ($0.match, $0.category) }, uniquingKeysWith: { first, _ in first })
+        domainOrder = domains.map(\.match)
     }
 
     private func save() {
         let bundles = bundleRules
             .sorted { $0.key < $1.key }
             .map { Rule(match: $0.key, type: .bundle, category: $0.value) }
-        let domains = domainRules.map { Rule(match: $0.domain, type: .domain, category: $0.category) }
+        let domains = domainOrder.compactMap { domain in
+            siteRules[domain].map { Rule(match: domain, type: .domain, category: $0) }
+        }
         do {
             try sampler.rules.save(bundles + domains)
             saveError = nil

@@ -32,7 +32,6 @@ final class Sampler: ObservableObject {
     let rules = Rules()
     private var database: Database?
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var terminationObserver: NSObjectProtocol?
     private var browserTimer: Timer?
     private var idleTimer: Timer?
     private var resumeTimer: Timer?
@@ -94,11 +93,6 @@ final class Sampler: ObservableObject {
             $0.inactiveSession = false
             $0.sample()
         }
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.terminate() }
-        }
     }
 
     private func observeWorkspace(_ name: Notification.Name,
@@ -154,14 +148,9 @@ final class Sampler: ObservableObject {
         guard !suspended else { return }
         let idle = CGEventSource.secondsSinceLastEventType(
             .combinedSessionState, eventType: Self.anyInputEvent)
-        handleIdle(idle, at: Date())
-    }
-
-    private func handleIdle(_ idle: TimeInterval, at date: Date) {
-        guard !suspended else { return }
         guard idle.isFinite, idle >= 0 else { return }
         if idle >= Self.idleThreshold && currentState.category != .paused {
-            pause(at: date.addingTimeInterval(-idle))
+            pause(at: Date().addingTimeInterval(-idle))
         } else if idle < Self.idleThreshold && currentState.category == .paused {
             // Il tick misura solo l'idle. La ripresa usa il normale task di campionamento.
             sample()
@@ -194,7 +183,7 @@ final class Sampler: ObservableObject {
         }
     }
 
-    private func terminate() {
+    func terminate() {
         terminating = true
         generation += 1
         sampleTask?.cancel()
@@ -293,7 +282,7 @@ final class Sampler: ObservableObject {
         }
     }
 
-    func recap(from: Date, to: Date) async throws -> Recap {
+    func recap(from: Date, to: Date, only: String? = nil) async throws -> Recap {
         guard let database else {
             throw NSError(domain: "BUSY", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 storageError ?? "Database in apertura"])
@@ -301,19 +290,23 @@ final class Sampler: ObservableObject {
         await pauseTask?.value
         if currentState.category != .paused { await sampleTask?.value }
         let samples = try await database.samplesInRange(from: from, to: to)
-        return Recap.aggregate(reclassified(samples), from: from, to: to)
+        // Su un anno sono decine di migliaia di sample: il calcolo non blocca la UI.
+        let rules = rules.entries
+        return await Task.detached(priority: .userInitiated) {
+            Recap.aggregate(Self.reclassified(samples, rules: rules), from: from, to: to, only: only)
+        }.value
     }
 
     // Il colore salvato nel DB è quello delle regole di quel momento. Nel recap
     // ricalcoliamo con le regole attuali, così una modifica vale anche sul passato.
     // Pause e URL illeggibili (browser senza dominio) restano come sono.
-    private func reclassified(_ samples: [Session]) -> [Session] {
+    nonisolated private static func reclassified(_ samples: [Session], rules: [Rule]) -> [Session] {
         samples.map { sample in
             guard sample.category != .paused else { return sample }
             let isBrowser = BrowserURLReader.supported.contains(sample.bundleID)
             if isBrowser && sample.domain == nil { return sample }
             let result = Classifier.classify(bundleID: sample.bundleID, domain: sample.domain,
-                                             isBrowser: isBrowser, rules: rules.entries)
+                                             isBrowser: isBrowser, rules: rules)
             return Session(id: sample.id, timestamp: sample.timestamp, bundleID: sample.bundleID,
                            domain: sample.domain, category: result.category,
                            matchedRule: result.matchedRule)
@@ -339,16 +332,5 @@ final class Sampler: ObservableObject {
     private func stopResumeTimer() {
         resumeTimer?.invalidate()
         resumeTimer = nil
-    }
-
-    deinit {
-        rulesWatcher?.cancel()
-        sampleTask?.cancel()
-        pauseTask?.cancel()
-        browserTimer?.invalidate()
-        idleTimer?.invalidate()
-        resumeTimer?.invalidate()
-        for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
-        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 }

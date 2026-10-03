@@ -55,6 +55,14 @@ enum BrowserURLReader {
         return host.isEmpty ? nil : host
     }
 
+    /// Permesso di Automazione verso un browser: noErr consentito, errAEEventNotPermitted
+    /// negato, procNotFound se il browser è chiuso, altrimenti ancora da chiedere.
+    /// Con `ask` mostra il dialogo di macOS e aspetta la risposta: mai sul main thread.
+    static func automationPermission(_ bundleID: String, ask: Bool) -> OSStatus {
+        let target = NSAppleEventDescriptor(bundleIdentifier: bundleID)
+        return AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, ask)
+    }
+
     static func readURL(bundleID: String) async -> String? {
         guard supported.contains(bundleID) else { return nil }
         return await execute {

@@ -6,6 +6,8 @@ enum Classifier {
         let matchedRule: String?
     }
 
+    static let urlUnavailable = "browser-url-unavailable"
+
     static func classify(bundleID: String, domain: String?, isBrowser: Bool,
                          rules: [Rule]) -> Result {
         if let domain {
@@ -20,7 +22,7 @@ enum Classifier {
                 return result(for: rule)
             }
             if isBrowser {
-                return Result(category: .unknown, matchedRule: "browser-url-unavailable")
+                return Result(category: .unknown, matchedRule: urlUnavailable)
             }
             if let rule = rules.first(where: { $0.type == .default }) {
                 return result(for: rule)
