@@ -81,16 +81,23 @@ struct Recap {
     var segments: [TimelineSegment] = []
 
     // Intervalli semiaperti [from, to). Il primo sample può precedere from.
-    static func aggregate(_ samples: [Session], from: Date, to: Date,
+    // `only`: conta solo quell'app o dominio. Gli altri sample servono comunque
+    // a chiudere gli intervalli, quindi il filtro va qui e non prima.
+    static func aggregate(_ samples: [Session], from: Date, to: Date, only: String? = nil,
                           calendar: Calendar = .current) -> Recap {
         guard from < to else { return Recap() }
         var result = Recap()
         var day = calendar.startOfDay(for: from)
+        // Fine di ogni giorno calcolata una volta sola: le operazioni di Calendar
+        // per ogni sample erano quasi tutto il tempo del recap annuale.
+        var dayEnds: [Date] = []
         while day < to {
             result.days.append(DailyTotal(id: day))
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            dayEnds.append(next)
             day = next
         }
+        var dayIndex = 0
         var activities: [ActivityTotal.Key: TimeInterval] = [:]
         let ordered = samples.sorted {
             $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
@@ -98,28 +105,26 @@ struct Recap {
         for (index, sample) in ordered.enumerated() {
             let start = max(from, sample.timestamp)
             let end = min(to, index + 1 < ordered.count ? ordered[index + 1].timestamp : to)
-            guard start < end else { continue }
+            let name = sample.category == .paused ? "Pausa" : (sample.domain ?? sample.bundleID)
+            guard start < end, only == nil || only == name else { continue }
             let seconds = end.timeIntervalSince(start)
             result.totals.add(seconds, category: sample.category)
             result.segments.append(TimelineSegment(id: index, start: start, end: end,
-                category: sample.category,
-                name: sample.category == .paused ? "Pausa" : (sample.domain ?? sample.bundleID)))
+                category: sample.category, name: name))
             // Pausa e URL illeggibili sono diagnostica, esclusa dalla classifica.
-            if sample.category.isClassified {
+            // Le app non segnate (grigie) restano: servono per decidere cosa segnare.
+            if sample.category != .paused && sample.matchedRule != Classifier.urlUnavailable {
                 let key = ActivityTotal.Key(name: sample.domain ?? sample.bundleID,
                                            category: sample.category)
                 activities[key, default: 0] += seconds
             }
-            // Parte direttamente dal giorno del sample: con la vista annuale scorrere
-            // tutti i 365 giorni per ogni sample sarebbe troppo lento.
-            guard let firstDay = result.days.first?.id else { continue }
-            var i = max(0, calendar.dateComponents([.day], from: firstDay,
-                                                   to: calendar.startOfDay(for: start)).day ?? 0)
-            while i < result.days.count {
+            // I sample sono in ordine: il giorno di partenza avanza e non torna mai indietro.
+            while dayIndex < dayEnds.count && dayEnds[dayIndex] <= start { dayIndex += 1 }
+            var i = dayIndex
+            while i < dayEnds.count {
                 let dayStart = result.days[i].id
-                guard dayStart < end,
-                      let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { break }
-                let overlap = min(end, dayEnd).timeIntervalSince(max(start, dayStart))
+                guard dayStart < end else { break }
+                let overlap = min(end, dayEnds[i]).timeIntervalSince(max(start, dayStart))
                 if overlap > 0 { result.days[i].totals.add(overlap, category: sample.category) }
                 i += 1
             }

@@ -1,16 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
-
-extension Category {
-    var color: Color {
-        switch self {
-        case .green: return .green
-        case .red: return .red
-        case .paused, .unknown: return .gray
-        }
-    }
-}
+import ServiceManagement
 
 // MenuBarExtra accetta solo un'immagine statica come label: niente animazioni e
 // padding fisso. Con NSStatusItem + Core Animation lo switch scorre in modo fluido
@@ -60,7 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &cancellables)
 
         switchView.setCategory(sampler.currentState.category, animated: false)
-        Task { await sampler.start() }
+        Task {
+            await sampler.start()
+            // Primo avvio: si parte dalla scelta rapida delle app.
+            if sampler.rules.isFirstRun { openWindow(tab: .apps) }
+        }
     }
 
     @objc private func togglePopover(_ sender: NSStatusBarButton) {
@@ -72,19 +67,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// Una sola finestra con le schede Recap e Regole. Se è già aperta la porta
+    /// Una sola finestra con sidebar: Recap, Regole (App, Siti), Impostazioni. Se è già aperta la porta
     /// davanti senza toccarla; con `tab` passa a quella scheda.
     private func openWindow(tab: MainTab? = nil) {
         popover.performClose(nil)
         if mainWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 660, height: 760),
+                contentRect: NSRect(x: 0, y: 0, width: 860, height: 760),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered, defer: false)
             window.title = "BUSY"
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.setContentSize(NSSize(width: 660, height: 760))
+            window.setContentSize(NSSize(width: 860, height: 760))
             window.center()
             mainWindow = window
         }
@@ -106,18 +101,119 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-enum MainTab { case recap, rules }
+enum MainTab: Hashable { case recap, apps, sites, settings }
 
 struct MainView: View {
     let sampler: Sampler
     @State var tab: MainTab
 
     var body: some View {
-        TabView(selection: $tab) {
-            RecapView(sampler: sampler).tabItem { Text("Recap") }.tag(MainTab.recap)
-            RulesEditorView(sampler: sampler).tabItem { Text("Regole") }.tag(MainTab.rules)
+        NavigationSplitView(columnVisibility: .constant(.all)) {
+            List(selection: $tab) {
+                Label("Recap", systemImage: "chart.bar.fill").tag(MainTab.recap)
+                Section("Regole") {
+                    Label("App", systemImage: "square.grid.2x2").tag(MainTab.apps)
+                    Label("Siti", systemImage: "globe").tag(MainTab.sites)
+                }
+                Label("Impostazioni", systemImage: "gearshape").tag(MainTab.settings)
+            }
+            .safeAreaInset(edge: .bottom) {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Text("Mac acceso da \(Self.uptime(at: context.date))")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16).padding(.bottom, 12)
+                }
+            }
+            .navigationSplitViewColumnWidth(170)
+            // In una NSWindow creata a mano il pulsante della sidebar non funziona: via.
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            switch tab {
+            case .recap: RecapView(sampler: sampler)
+            case .apps: RulesEditorView(sampler: sampler, tab: .apps)
+            case .sites: RulesEditorView(sampler: sampler, tab: .sites)
+            case .settings: SettingsView(sampler: sampler)
+            }
         }
-        .padding(.top, 8)
+    }
+
+    /// Avvio del Mac (kern.boottime): l'uptime include il tempo in stop, come `uptime`.
+    private static let bootDate: Date? = {
+        var time = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &time, &size, nil, 0) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(time.tv_sec) + TimeInterval(time.tv_usec) / 1_000_000)
+    }()
+
+    private static func uptime(at now: Date) -> String {
+        guard let bootDate else { return "—" }
+        let seconds = now.timeIntervalSince(bootDate)
+        let days = Int(seconds / 86_400)
+        return days > 0 ? "\(days)g \(Totals.duration(seconds.truncatingRemainder(dividingBy: 86_400)))"
+                        : Totals.duration(seconds)
+    }
+}
+
+struct SettingsView: View {
+    let sampler: Sampler
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var loginError: String?
+    @State private var defaultCategory: Category = .unknown
+    @State private var saveError: String?
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Apri all'accensione del Mac", isOn: Binding(
+                    get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))
+                if let loginError { Text(loginError).font(.caption).foregroundStyle(Theme.red) }
+            }
+            Section {
+                Picker("App e siti non segnati", selection: Binding(
+                    get: { defaultCategory }, set: { setDefault($0) })) {
+                    Text("Grigi (non contano)").tag(Category.unknown)
+                    Text(Category.green.title).tag(Category.green)
+                    Text(Category.red.title).tag(Category.red)
+                }
+                if let saveError { Text(saveError).font(.caption).foregroundStyle(Theme.red) }
+            } footer: {
+                HStack {
+                    Text("Le modifiche valgono subito, anche sul passato.")
+                    Spacer()
+                    Button("Apri rules.json") { sampler.editRules() }.buttonStyle(.link)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minWidth: 520, minHeight: 300)
+        // Si può cambiare anche da Impostazioni di Sistema → Generali → Elementi login.
+        .onAppear {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+            defaultCategory = sampler.rules.entries.last(where: { $0.type == .default })?.category ?? .red
+        }
+    }
+
+    private func setDefault(_ category: Category) {
+        do {
+            try sampler.rules.setDefault(category)
+            sampler.reloadRules()
+            defaultCategory = category
+            saveError = nil
+        } catch { saveError = error.localizedDescription }
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginError = nil
+        } catch { loginError = error.localizedDescription }
+        let status = SMAppService.mainApp.status
+        launchAtLogin = status == .enabled
+        if status == .requiresApproval {
+            loginError = "Da approvare in Impostazioni di Sistema → Generali → Elementi login."
+        }
     }
 }
 
@@ -128,9 +224,9 @@ final class StatusSwitchView: NSView {
     private static let trackSize = CGSize(width: 32, height: 16)
     private static let knobSize = CGSize(width: 20, height: 14)
     private static let inset: CGFloat = 1
-    private static let brightGreen = NSColor(srgbRed: 0.10, green: 0.82, blue: 0.30, alpha: 1)
-    private static let brightRed = NSColor(srgbRed: 1.00, green: 0.20, blue: 0.22, alpha: 1)
-    private static let neutral = NSColor(white: 0.40, alpha: 1)
+    private static let brightGreen = Theme.greenNS
+    private static let brightRed = Theme.redNS
+    private static let neutral = Theme.neutralNS
 
     private let track = CALayer()
     private let knob = CAGradientLayer()

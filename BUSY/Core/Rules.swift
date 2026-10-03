@@ -10,6 +10,8 @@ struct Rule: Codable, Sendable {
 @MainActor
 final class Rules {
     private(set) var entries: [Rule] = []
+    /// Vero se a questo avvio rules.json non esisteva: primo avvio, si mostra l'onboarding.
+    private(set) var isFirstRun = false
     let fileURL: URL
     private let resourceURL: URL?
 
@@ -47,6 +49,11 @@ final class Rules {
         entries = ordered
     }
 
+    /// Cambia solo la regola default (app e siti non segnati).
+    func setDefault(_ category: Category) throws {
+        try save(entries.filter { $0.type != .default } + [Rule(match: "*", type: .default, category: category)])
+    }
+
     private func seedIfNeeded() throws {
         let manager = FileManager.default
         guard !manager.fileExists(atPath: fileURL.path) else { return }
@@ -58,6 +65,7 @@ final class Rules {
                                         withIntermediateDirectories: true)
             // copyItem non sovrascrive un file già esistente.
             try manager.copyItem(at: resourceURL, to: fileURL)
+            isFirstRun = true
         } catch {
             throw RulesError.invalid("Impossibile inizializzare \(fileURL.path) dal bundle: \(error.localizedDescription)")
         }

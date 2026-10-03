@@ -20,27 +20,29 @@ struct StatusBarView: View {
                 Text(sampler.currentState.category.title).foregroundStyle(.secondary)
             }
             if let domain = sampler.currentState.domain { Text(domain).textSelection(.enabled) }
-            if sampler.currentState.category == .unknown {
+            if sampler.currentState.category == .unknown && sampler.currentState.domain == nil
+                && BrowserURLReader.supported.contains(sampler.currentState.bundleID) {
                 Text("URL non leggibile — pagina interna/locale o accesso non disponibile. Controlla Impostazioni di Sistema → Privacy e sicurezza → Automazione.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()
             Text("Oggi").font(.title3.bold())
             HStack(alignment: .top, spacing: 24) {
-                todaySummary("Verde", seconds: totals.green, category: .green)
-                todaySummary("Rosso", seconds: totals.red, category: .red)
+                StatCard(category: .green, seconds: totals.green,
+                         percentage: totals.percentage(.green))
+                StatCard(category: .red, seconds: totals.red,
+                         percentage: totals.percentage(.red))
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("In pausa: \(Totals.duration(totals.paused))")
-                Text("Non classificato: \(Totals.duration(totals.unclassified))")
+            HStack(spacing: 14) {
+                LegendChip(category: .paused, seconds: totals.paused)
+                LegendChip(category: .unknown, seconds: totals.unclassified)
             }
-            .font(.caption).foregroundStyle(.secondary)
             CompactTimelineView(segments: segments)
             if !activities.isEmpty {
                 Text("Usato oggi").font(.headline).padding(.top, 4)
                 VStack(spacing: 6) {
                     ForEach(Array(activities.prefix(6))) { entry in
-                        activityRow(entry, max: activities.first?.seconds ?? 1)
+                        ActivityRow(entry: entry, longest: activities.first?.seconds ?? 1)
                     }
                 }
                 if activities.count > 6 {
@@ -48,8 +50,8 @@ struct StatusBarView: View {
                         .buttonStyle(.link).font(.caption)
                 }
             }
-            if let error = sampler.rulesError { Text("Regole: \(error)").foregroundStyle(.red) }
-            if let error = sampler.storageError ?? queryError { Text("Database: \(error)").foregroundStyle(.red) }
+            if let error = sampler.rulesError { Text("Regole: \(error)").foregroundStyle(Theme.red) }
+            if let error = sampler.storageError ?? queryError { Text("Database: \(error)").foregroundStyle(Theme.red) }
             Divider()
             HStack(spacing: 8) {
                 Button("Recap & Regole") { openWindow(nil) }
@@ -79,37 +81,6 @@ struct StatusBarView: View {
         // App senza Dock: senza activate l'avviso può finire dietro le altre finestre.
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
-    }
-
-    // Riga: icona/pallino, nome, barra proporzionale all'attività più lunga, durata.
-    private func activityRow(_ entry: ActivityTotal, max longest: TimeInterval) -> some View {
-        HStack(spacing: 8) {
-            Circle().fill(entry.id.category.color).frame(width: 7, height: 7)
-            Text(AppName.display(entry.id.name)).lineLimit(1).truncationMode(.middle)
-                .frame(width: 130, alignment: .leading)
-                .help(entry.id.name)
-            GeometryReader { geo in
-                Capsule()
-                    .fill(entry.id.category.color.opacity(0.7))
-                    .frame(width: max(3, geo.size.width * CGFloat(entry.seconds / Swift.max(longest, 1))))
-                    .frame(maxHeight: .infinity)
-            }
-            .frame(height: 5)
-            Text(Totals.duration(entry.seconds)).font(.caption).monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(width: 48, alignment: .trailing)
-        }
-    }
-
-    // Stesso blocco del Recap: titolo colorato, durata grande, percentuale.
-    private func todaySummary(_ title: String, seconds: TimeInterval, category: Category) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).foregroundStyle(category.color)
-            Text(Totals.duration(seconds)).font(.title2).monospacedDigit()
-            Text("\(totals.percentage(category), specifier: "%.1f")% del tempo classificato")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @MainActor private func refresh() async {
@@ -159,8 +130,8 @@ struct CompactTimelineView: View {
     }
     private static let separatorWidth: CGFloat = 5
     private static let columnWidth: CGFloat = 3
-    private static let green = Color(red: 0.10, green: 0.85, blue: 0.30)
-    private static let red = Color(red: 1.0, green: 0.22, blue: 0.22)
+    private static let green = Theme.green
+    private static let red = Theme.red
 
     @State private var hoverText: String?
 
@@ -284,10 +255,10 @@ struct CompactTimelineView: View {
     }
 
     private func draw(_ layout: Layout, in context: inout GraphicsContext, size: CGSize) {
-        context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.secondary.opacity(0.12)))
+        context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Theme.track))
         for column in layout.columns {
             let parts: [(TimeInterval, Color)] = [(column.red, Self.red),
-                                                  (column.unknown, .gray.opacity(0.6)),
+                                                  (column.unknown, Theme.unknown),
                                                   (column.green, Self.green)]
             let sum = parts.reduce(0) { $0 + $1.0 }
             guard sum > 0 else { continue }

@@ -293,7 +293,7 @@ final class Sampler: ObservableObject {
         }
     }
 
-    func recap(from: Date, to: Date) async throws -> Recap {
+    func recap(from: Date, to: Date, only: String? = nil) async throws -> Recap {
         guard let database else {
             throw NSError(domain: "BUSY", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 storageError ?? "Database in apertura"])
@@ -301,19 +301,23 @@ final class Sampler: ObservableObject {
         await pauseTask?.value
         if currentState.category != .paused { await sampleTask?.value }
         let samples = try await database.samplesInRange(from: from, to: to)
-        return Recap.aggregate(reclassified(samples), from: from, to: to)
+        // Su un anno sono decine di migliaia di sample: il calcolo non blocca la UI.
+        let rules = rules.entries
+        return await Task.detached(priority: .userInitiated) {
+            Recap.aggregate(Self.reclassified(samples, rules: rules), from: from, to: to, only: only)
+        }.value
     }
 
     // Il colore salvato nel DB è quello delle regole di quel momento. Nel recap
     // ricalcoliamo con le regole attuali, così una modifica vale anche sul passato.
     // Pause e URL illeggibili (browser senza dominio) restano come sono.
-    private func reclassified(_ samples: [Session]) -> [Session] {
+    nonisolated private static func reclassified(_ samples: [Session], rules: [Rule]) -> [Session] {
         samples.map { sample in
             guard sample.category != .paused else { return sample }
             let isBrowser = BrowserURLReader.supported.contains(sample.bundleID)
             if isBrowser && sample.domain == nil { return sample }
             let result = Classifier.classify(bundleID: sample.bundleID, domain: sample.domain,
-                                             isBrowser: isBrowser, rules: rules.entries)
+                                             isBrowser: isBrowser, rules: rules)
             return Session(id: sample.id, timestamp: sample.timestamp, bundleID: sample.bundleID,
                            domain: sample.domain, category: result.category,
                            matchedRule: result.matchedRule)

@@ -39,5 +39,5 @@
   { "match": "com.apple.Music", "type": "bundle", "category": "red" },
   { "match": "tv.plex.desktop", "type": "bundle", "category": "red" },
   { "match": "org.videolan.vlc", "type": "bundle", "category": "red" },
-  { "match": "*", "type": "default", "category": "red" }
+  { "match": "*", "type": "default", "category": "unknown" }
 ]
