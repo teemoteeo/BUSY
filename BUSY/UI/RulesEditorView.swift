@@ -66,7 +66,7 @@ struct RulesEditorView: View {
                 Text("Regole: \(error)").font(.caption).foregroundStyle(Theme.red)
             }
         }
-        .padding()
+        .padding(Theme.pagePadding)
         .frame(minWidth: 520)
         .onAppear(perform: load)
         .onReceive(sampler.$rulesError) { rulesError = $0 }

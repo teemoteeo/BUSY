@@ -27,6 +27,8 @@ enum Theme {
     static let track = Color.secondary.opacity(0.12)
 
     static let rowSpacing: CGFloat = 8
+    /// Margini delle pagine: a sinistra il testo parte dove parte il titolo nella barra (20 pt).
+    static let pagePadding = EdgeInsets(top: 12, leading: 20, bottom: 20, trailing: 20)
 }
 
 extension Category {
@@ -279,10 +281,22 @@ struct TitledSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading) {
+        // 12 pt tra titolo e contenuto: con lo spazio predefinito il titolo sembrava
+        // una riga dell'elenco sotto (Top 10).
+        VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline)
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - SectionSeparator
+
+/// Linea tra due sezioni di una pagina, con aria sopra e sotto. Lo spazio cresce
+/// (fino al doppio) quando la finestra è alta, così il contenuto la riempie.
+struct SectionSeparator: View {
+    var body: some View {
+        Divider().frame(minHeight: 36, maxHeight: 80)
     }
 }

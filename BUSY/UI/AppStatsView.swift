@@ -54,7 +54,7 @@ struct AppStatsView: View {
                     ProgressView().frame(maxWidth: .infinity)
                 }
             }
-            .padding()
+            .padding(Theme.pagePadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 620, minHeight: 580)

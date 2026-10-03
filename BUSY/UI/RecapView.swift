@@ -54,46 +54,57 @@ struct RecapView: View {
     var body: some View {
         VStack(alignment: .leading) {
             toolbar
-            ScrollView {
-                VStack(alignment: .leading) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top, spacing: 32) {
-                            StatCard(category: .green, seconds: recap.totals.green,
-                                     percentage: recap.totals.percentage(.green))
-                            StatCard(category: .red, seconds: recap.totals.red,
-                                     percentage: recap.totals.percentage(.red))
-                        }
-                        HStack(spacing: 16) {
-                            LegendChip(category: .paused, seconds: recap.totals.paused)
-                            LegendChip(category: .unknown, seconds: recap.totals.unclassified)
-                        }
-                    }
-                    if let errorMessage { Text(errorMessage).foregroundStyle(Theme.red) }
-                    TitledSection("Timeline") {
-                        CompactTimelineView(segments: recap.segments, height: 28, period: period)
-                            .opacity(loadedKey == key ? 1 : 0)
-                    }
-                    breakdown.opacity(loadedKey == key ? 1 : 0)
-                    TitledSection("Top 10 per tempo speso") {
-                        if recap.activities.isEmpty {
-                            Text("Nessuna sessione nell'intervallo.").foregroundStyle(.secondary)
-                        }
-                        VStack(spacing: Theme.rowSpacing) {
-                            ForEach(Array(recap.activities.prefix(10))) { entry in
-                                Button { openStats(entry.id.name) } label: {
-                                    ActivityRow(entry: entry, longest: recap.activities.first?.seconds ?? 1,
-                                                nameWidth: 180)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .help("Statistiche di \(AppName.display(entry.id.name))")
+            // Le sezioni si allargano fino a riempire la finestra (vedi SectionSeparator),
+            // oltre si scorre.
+            GeometryReader { geo in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 32) {
+                                StatCard(category: .green, seconds: recap.totals.green,
+                                         percentage: recap.totals.percentage(.green))
+                                StatCard(category: .red, seconds: recap.totals.red,
+                                         percentage: recap.totals.percentage(.red))
+                            }
+                            HStack(spacing: 16) {
+                                LegendChip(category: .paused, seconds: recap.totals.paused)
+                                LegendChip(category: .unknown, seconds: recap.totals.unclassified)
                             }
                         }
+                        if let errorMessage { Text(errorMessage).foregroundStyle(Theme.red).padding(.top, 8) }
+                        SectionSeparator()
+                        TitledSection("Timeline") {
+                            CompactTimelineView(segments: recap.segments, height: 28, period: period)
+                                .opacity(loadedKey == key ? 1 : 0)
+                        }
+                        if period != .day {
+                            SectionSeparator()
+                            breakdown.opacity(loadedKey == key ? 1 : 0)
+                        }
+                        SectionSeparator()
+                        TitledSection("Top 10 per tempo speso") {
+                            if recap.activities.isEmpty {
+                                Text("Nessuna sessione nell'intervallo.").foregroundStyle(.secondary)
+                            }
+                            VStack(spacing: Theme.rowSpacing) {
+                                ForEach(Array(recap.activities.prefix(10))) { entry in
+                                    Button { openStats(entry.id.name) } label: {
+                                        ActivityRow(entry: entry, longest: recap.activities.first?.seconds ?? 1,
+                                                    nameWidth: 180)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Statistiche di \(AppName.display(entry.id.name))")
+                                }
+                            }
+                        }
+                        Spacer(minLength: 0)
                     }
+                    .frame(minHeight: geo.size.height, alignment: .top)
                 }
             }
         }
-        .padding()
+        .padding(Theme.pagePadding)
         .frame(minWidth: 620, minHeight: 580)
         .environment(\.locale, Self.italian)
         .task(id: key) {

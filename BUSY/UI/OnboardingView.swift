@@ -63,8 +63,9 @@ struct OnboardingView: View {
             .padding()
             .background(alignment: .top) { Divider() }
         }
-        // La finestra prende la misura della vista: senza questo si stringe al minimo.
-        .frame(minWidth: 620, idealWidth: 860, minHeight: 580, idealHeight: 760)
+        // Stessa misura minima della finestra principale.
+        .frame(minWidth: 860)
+        .frame(minHeight: 580, idealHeight: 760)
         .scrollContentBackground(.hidden)
         .background(Theme.background)
         .navigationTitle("Benvenuto in BUSY")

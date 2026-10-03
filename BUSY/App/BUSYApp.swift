@@ -84,26 +84,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 backing: .buffered, defer: false)
             window.title = "BUSY"
             // Come le app Apple con sidebar: barra unificata, sidebar fino in cima sotto i
-            // pulsanti della finestra, angoli e margini di sistema.
+            // pulsanti della finestra. Su macOS 26 solo una finestra con toolbar ha gli angoli
+            // ampi, concentrici con quelli della sidebar di vetro: serve anche se vuota.
+            window.toolbar = NSToolbar()
             window.toolbarStyle = .unified
+            // Il titolo nella barra è piccolo: MainDetail ne mette uno più grande.
+            window.titleVisibility = .hidden
+            window.titlebarSeparatorStyle = .none
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.setContentSize(NSSize(width: 860, height: 760))
-            window.center()
+            // Sidebar (230) + pagina più stretta (620): sotto questa misura non si stringe.
+            window.contentMinSize = NSSize(width: 860, height: 580)
             mainWindow = window
         }
+        let reopening = mainWindow?.contentViewController == nil
         // Vista nuova a ogni apertura (riparte da "Oggi" e rilegge le regole).
-        if mainWindow?.contentViewController == nil || tab != nil {
-            let root = onboarding
-                ? AnyView(OnboardingView(sampler: sampler) { [weak self] in
+        if reopening || tab != nil {
+            if onboarding {
+                let host = NSHostingController(rootView: OnboardingView(sampler: sampler) { [weak self] in
                     self?.onboarding = false
                     self?.openWindow(tab: .recap)
                 })
-                : AnyView(MainView(sampler: sampler, tab: tab ?? .recap))
-            let host = NSHostingController(rootView: root)
-            // Il titolo della pagina e la barra degli strumenti passano alla finestra.
-            host.sceneBridgingOptions = [.title, .toolbars]
-            mainWindow?.contentViewController = host
+                // Il titolo della pagina passa alla finestra.
+                host.sceneBridgingOptions = [.title]
+                mainWindow?.contentViewController = host
+            } else {
+                mainWindow?.contentViewController = MainSplitViewController(sampler: sampler, tab: tab ?? .recap)
+            }
+        }
+        // Il contenuto nuovo stringe la finestra alla sua misura minima: si riporta a quella iniziale.
+        if reopening {
+            mainWindow?.setContentSize(NSSize(width: 860, height: 760))
+            mainWindow?.center()
         }
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
@@ -135,55 +147,71 @@ enum MainTab: Hashable {
     }
 }
 
-struct MainView: View {
-    let sampler: Sampler
-    @State var tab: MainTab
+/// Sidebar di AppKit e non NavigationSplitView: su macOS 26 è la stessa sidebar di vetro
+/// staccata dai bordi delle app Apple e, con canCollapse = false, trascinando il bordo
+/// non si chiude (come in Impostazioni di Sistema).
+final class MainSplitViewController: NSSplitViewController {
+    init(sampler: Sampler, tab: MainTab) {
+        super.init(nibName: nil, bundle: nil)
+        let nav = MainNavigation(tab: tab)
+        let sidebar = NSSplitViewItem(sidebarWithViewController: NSHostingController(rootView: MainSidebar(nav: nav)))
+        sidebar.canCollapse = false
+        sidebar.minimumThickness = 230
+        sidebar.maximumThickness = 230
+        let detail = NSHostingController(rootView: MainDetail(sampler: sampler, nav: nav))
+        // Il titolo e la barra della pagina passano alla finestra.
+        detail.sceneBridgingOptions = [.title, .toolbars]
+        addSplitViewItem(sidebar)
+        addSplitViewItem(NSSplitViewItem(viewController: detail))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) non supportato") }
+}
+
+@Observable final class MainNavigation {
+    /// Un clic nella sidebar chiude la scheda dell'app.
+    var tab: MainTab { didSet { statsFocus = nil } }
     /// App o sito cliccato nelle Regole o nella Top 10: al posto della pagina si vede la sua scheda.
-    @State private var statsFocus: String?
+    var statsFocus: String?
+    init(tab: MainTab) { self.tab = tab }
+}
+
+struct MainSidebar: View {
+    @Bindable var nav: MainNavigation
 
     var body: some View {
-        let openStats: (String) -> Void = { statsFocus = $0 }
-        NavigationSplitView(columnVisibility: .constant(.all)) {
-            List(selection: $tab) {
-                Label("Recap", systemImage: "chart.bar.fill").tag(MainTab.recap)
-                Section("Regole") {
-                    Label("App", systemImage: "square.grid.2x2").tag(MainTab.apps)
-                    Label("Siti", systemImage: "globe").tag(MainTab.sites)
-                }
-                Label("Impostazioni", systemImage: "gearshape").tag(MainTab.settings)
+        List(selection: $nav.tab) {
+            row("Recap", "chart.bar.fill", .blue).tag(MainTab.recap)
+            Section("Regole") {
+                row("App", "square.grid.2x2.fill", .indigo).tag(MainTab.apps)
+                row("Siti", "globe", .teal).tag(MainTab.sites)
             }
-            .safeAreaInset(edge: .bottom) {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    Text("Mac acceso da \(Self.uptime(at: context.date))")
-                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16).padding(.bottom, 12)
-                }
-            }
-            .navigationSplitViewColumnWidth(170)
-            // In una NSWindow creata a mano il pulsante della sidebar non funziona: via.
-            .toolbar(removing: .sidebarToggle)
-        } detail: {
-            Group {
-                if let statsFocus {
-                    AppStatsView(sampler: sampler, name: statsFocus) { self.statsFocus = nil }
-                        .id(statsFocus)
-                } else {
-                    switch tab {
-                    case .recap: RecapView(sampler: sampler, openStats: openStats)
-                    case .apps: RulesEditorView(sampler: sampler, tab: .apps, openStats: openStats)
-                    case .sites: RulesEditorView(sampler: sampler, tab: .sites, openStats: openStats)
-                    case .settings: SettingsView(sampler: sampler)
-                    }
-                }
-            }
-            // Liste e moduli senza il loro fondo bianco: si vede lo sfondo smorzato.
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
-            .navigationTitle(statsFocus.map(AppName.display) ?? tab.title)
+            row("Impostazioni", "gearshape.fill", .gray).tag(MainTab.settings)
         }
-        // Un clic nella sidebar chiude la scheda dell'app.
-        .onChange(of: tab) { _, _ in statsFocus = nil }
+        .listStyle(.sidebar)
+        // Righe alte come in Impostazioni di Sistema.
+        .environment(\.sidebarRowSize, .large)
+        .safeAreaInset(edge: .bottom) {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                Text("Mac acceso da \(Self.uptime(at: context.date))")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.bottom, 12)
+            }
+        }
+    }
+
+    /// Icona bianca su riquadro colorato, come le voci di Impostazioni di Sistema.
+    private func row(_ title: String, _ symbol: String, _ color: Color) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(color.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
     }
 
     /// Avvio del Mac (kern.boottime): l'uptime include il tempo in stop, come `uptime`.
@@ -200,6 +228,48 @@ struct MainView: View {
         let days = Int(seconds / 86_400)
         return days > 0 ? "\(days)g \(Totals.duration(seconds.truncatingRemainder(dividingBy: 86_400)))"
                         : Totals.duration(seconds)
+    }
+}
+
+struct MainDetail: View {
+    let sampler: Sampler
+    let nav: MainNavigation
+
+    var body: some View {
+        let openStats: (String) -> Void = { nav.statsFocus = $0 }
+        let title = nav.statsFocus.map(AppName.display) ?? nav.tab.title
+        Group {
+            if let statsFocus = nav.statsFocus {
+                AppStatsView(sampler: sampler, name: statsFocus) { nav.statsFocus = nil }
+                    .id(statsFocus)
+            } else {
+                switch nav.tab {
+                case .recap: RecapView(sampler: sampler, openStats: openStats)
+                case .apps: RulesEditorView(sampler: sampler, tab: .apps, openStats: openStats)
+                case .sites: RulesEditorView(sampler: sampler, tab: .sites, openStats: openStats)
+                case .settings: SettingsView(sampler: sampler)
+                }
+            }
+        }
+        // Liste e moduli senza il loro fondo bianco: si vede lo sfondo smorzato.
+        .scrollContentBackground(.hidden)
+        .background(Theme.background)
+        // Il titolo di sistema nella barra è piccolo (15 pt) e non si ingrandisce: al suo posto
+        // un elemento della barra senza vetro. Sotto la barra il contenuto finirebbe sfocato.
+        .toolbar {
+            if #available(macOS 26, *) {
+                ToolbarItem(placement: .navigation) { Self.title(title) }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .navigation) { Self.title(title) }
+            }
+        }
+        // Nascosto nella barra, serve per il menu Finestra e Mission Control.
+        .navigationTitle(title)
+    }
+
+    private static func title(_ text: String) -> some View {
+        Text(text).font(.title.bold()).padding(.leading, 4)
     }
 }
 
