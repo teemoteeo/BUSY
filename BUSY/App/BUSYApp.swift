@@ -93,8 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.titlebarSeparatorStyle = .none
             window.isReleasedWhenClosed = false
             window.delegate = self
-            // Sidebar (230) + pagina più stretta (620): sotto questa misura non si stringe.
+            // Come Impostazioni di Sistema: larghezza fissa (sidebar 230 + pagina più stretta 620),
+            // si allunga solo in altezza; niente tutto schermo, il pulsante verde allunga al massimo.
             window.contentMinSize = NSSize(width: 860, height: 580)
+            window.contentMaxSize = NSSize(width: 860, height: CGFloat.greatestFiniteMagnitude)
+            window.collectionBehavior.insert(.fullScreenNone)
             mainWindow = window
         }
         let reopening = mainWindow?.contentViewController == nil
