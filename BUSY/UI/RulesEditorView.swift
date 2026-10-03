@@ -9,6 +9,8 @@ struct RulesEditorView: View {
     let sampler: Sampler
     /// Scelta dalla sidebar della finestra.
     let tab: Tab
+    /// Clic su un'app o un sito: apre le sue statistiche nel Recap.
+    var openStats: (String) -> Void = { _ in }
 
     enum Tab { case apps, sites }
 
@@ -25,17 +27,23 @@ struct RulesEditorView: View {
         }
     }
 
-    private struct DomainRule: Identifiable, Equatable {
-        var id: String { domain }
-        let domain: String
-        var category: Category
-    }
+    /// Giorni mostrati nella colonnina di ogni riga e usati per l'ordinamento.
+    private static let usageDays = 30
 
     @State private var apps: [InstalledApp] = []
     @State private var search = ""
     @State private var filter: Filter = .all
     @State private var bundleRules: [String: Category] = [:]
-    @State private var domainRules: [DomainRule] = []
+    /// Regole dei siti per dominio; `domainOrder` tiene l'ordine del file, che conta
+    /// quando due regole si sovrappongono (vince la prima).
+    @State private var siteRules: [String: Category] = [:]
+    @State private var domainOrder: [String] = []
+    /// Siti mostrati: quelli con una regola più quelli visitati senza regola.
+    @State private var sites: [String] = []
+    /// Tempo di ogni giorno degli ultimi 30, per bundle ID (app) e per regola o dominio (siti).
+    @State private var appUsage: [String: [TimeInterval]] = [:]
+    @State private var siteUsage: [String: [TimeInterval]] = [:]
+    @State private var loaded = false
     @State private var newLink = ""
     @State private var newCategory: Category = .red
     @State private var linkError: String?
@@ -61,11 +69,88 @@ struct RulesEditorView: View {
         .onAppear(perform: load)
         .onReceive(sampler.$rulesError) { rulesError = $0 }
         .task {
-            // Prima le app già verdi/rosse, poi le altre (scan le dà già in ordine alfabetico).
+            let (perApp, perSite) = await loadUsage()
             // Ordine fissato all'apertura: una riga classificata ora non salta via sotto il cursore.
-            let scanned = await InstalledApp.scan(extra: Array(bundleRules.keys))
-            apps = scanned.filter { bundleRules[$0.id] != nil } + scanned.filter { bundleRules[$0.id] == nil }
+            // Prima le più usate, poi quelle con una regola, poi le altre in ordine alfabetico.
+            let scanned = await InstalledApp.scan(extra: Array(bundleRules.keys) + Array(perApp.keys))
+            apps = scanned.enumerated().sorted { a, b in
+                let ua = Self.total(perApp[a.element.id]), ub = Self.total(perApp[b.element.id])
+                if ua != ub { return ua > ub }
+                let ra = bundleRules[a.element.id] != nil, rb = bundleRules[b.element.id] != nil
+                if ra != rb { return ra }
+                return a.offset < b.offset
+            }.map(\.element)
+            appUsage = perApp
+            // Un dominio visitato conta per la regola che lo copre (m.youtube.com → youtube.com).
+            var bySite: [String: [TimeInterval]] = [:]
+            for (domain, days) in perSite {
+                let key = domainOrder.first { domain == $0 || domain.hasSuffix("." + $0) } ?? domain
+                bySite[key] = zip(bySite[key] ?? Array(repeating: 0, count: days.count), days).map(+)
+            }
+            siteUsage = bySite
+            sites = Set(domainOrder).union(bySite.keys).sorted { a, b in
+                let ua = Self.total(bySite[a]), ub = Self.total(bySite[b])
+                if ua != ub { return ua > ub }
+                return a < b
+            }
+            loaded = true
         }
+    }
+
+    private static func total(_ days: [TimeInterval]?) -> TimeInterval { days?.reduce(0, +) ?? 0 }
+
+    /// Ultimi 30 giorni divisi per giorno, una sola query per app e siti insieme.
+    private func loadUsage() async -> (apps: [String: [TimeInterval]], sites: [String: [TimeInterval]]) {
+        let calendar = Calendar.current
+        let now = Date()
+        guard let start = calendar.date(byAdding: .day, value: -(Self.usageDays - 1), to: calendar.startOfDay(for: now)),
+              let recap = try? await sampler.recap(from: start, to: now) else { return ([:], [:]) }
+        let starts = recap.days.map(\.id)
+        var apps: [String: [TimeInterval]] = [:]
+        var sites: [String: [TimeInterval]] = [:]
+        var day = 0
+        for segment in recap.segments where segment.category != .paused {
+            while day + 1 < starts.count && starts[day + 1] <= segment.start { day += 1 }
+            var i = day
+            while i < starts.count && starts[i] < segment.end {
+                let dayEnd = i + 1 < starts.count ? starts[i + 1] : segment.end
+                let overlap = min(segment.end, dayEnd).timeIntervalSince(max(segment.start, starts[i]))
+                if overlap > 0 {
+                    if segment.isSite {
+                        sites[segment.name, default: Array(repeating: 0, count: starts.count)][i] += overlap
+                    } else {
+                        apps[segment.name, default: Array(repeating: 0, count: starts.count)][i] += overlap
+                    }
+                }
+                i += 1
+            }
+        }
+        return (apps, sites)
+    }
+
+    /// Icona, nome, uso degli ultimi 30 giorni e totale: tutta la parte sinistra apre le statistiche.
+    private func usageRow(name: String, help: String, icon: some View, category: Category?,
+                          usage: [TimeInterval]?, pill: some View) -> some View {
+        HStack(spacing: 10) {
+            Button { openStats(help) } label: {
+                HStack(spacing: 10) {
+                    icon.frame(width: 22, height: 22)
+                    Text(name).lineLimit(1)
+                    Spacer(minLength: 8)
+                    UsageSparkline(values: usage ?? Array(repeating: 0, count: Self.usageDays),
+                                   color: category?.color ?? Theme.unknown)
+                        .frame(width: 90, height: 16)
+                    Text(Self.total(usage) > 0 ? Totals.duration(Self.total(usage)) : "—")
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Statistiche di \(name) (\(help))")
+            pill
+        }
+        .padding(.vertical, 1)
     }
 
     // MARK: App
@@ -100,17 +185,15 @@ struct RulesEditorView: View {
                     filterChip(option, count: searched.filter { option.includes(bundleRules[$0.id]) }.count)
                 }
             }
-            Text(unmarkedNote).font(.caption).foregroundStyle(.secondary)
+            Text("\(unmarkedNote) Ordinate per uso negli ultimi 30 giorni; clic su un'app per le sue statistiche.")
+                .font(.caption).foregroundStyle(.secondary)
             List(searched.filter { filter.includes(bundleRules[$0.id]) }) { app in
-                HStack(spacing: 10) {
-                    Image(nsImage: app.icon).resizable().frame(width: 22, height: 22)
-                    Text(app.name).lineLimit(1).help(app.id)
-                    Spacer()
-                    CategoryPill(selection: bundleBinding(app.id))
-                }
-                .padding(.vertical, 1)
+                usageRow(name: app.name, help: app.id,
+                         icon: Image(nsImage: app.icon).resizable(),
+                         category: bundleRules[app.id], usage: appUsage[app.id],
+                         pill: CategoryPill(selection: bundleBinding(app.id)))
             }
-            if apps.isEmpty { ProgressView().frame(maxWidth: .infinity) }
+            if !loaded { ProgressView().frame(maxWidth: .infinity) }
         }
     }
 
@@ -155,25 +238,31 @@ struct RulesEditorView: View {
                     .disabled(newLink.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if let linkError { Text(linkError).font(.caption).foregroundStyle(Theme.red) }
-            Text("Vale per tutto il sito e i suoi sottodomini (youtube.com include m.youtube.com).")
+            Text("Vale per tutto il sito e i suoi sottodomini (youtube.com include m.youtube.com). Ci sono anche i siti visitati senza regola, ordinati per uso negli ultimi 30 giorni.")
                 .font(.caption).foregroundStyle(.secondary)
             List {
-                if domainRules.isEmpty { Text("Nessun sito.").foregroundStyle(.secondary) }
-                ForEach($domainRules) { $rule in
-                    HStack {
-                        Text(rule.domain)
-                        Spacer()
-                        CategoryPill(category: $rule.category)
-                            .onChange(of: rule.category) { _, _ in save() }
-                        Button {
-                            domainRules.removeAll { $0.domain == rule.domain }
-                            save()
-                        } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                    }
+                if loaded && sites.isEmpty { Text("Nessun sito.").foregroundStyle(.secondary) }
+                ForEach(sites, id: \.self) { domain in
+                    usageRow(name: domain, help: domain,
+                             icon: ActivityIcon(name: domain),
+                             category: siteRules[domain], usage: siteUsage[domain],
+                             pill: CategoryPill(selection: siteBinding(domain)))
                 }
             }
+            if !loaded { ProgressView().frame(maxWidth: .infinity) }
         }
+    }
+
+    /// "Non segnata" toglie la regola: il sito resta in elenco finché non riapri la pagina.
+    private func siteBinding(_ domain: String) -> Binding<Category?> {
+        Binding(
+            get: { siteRules[domain] },
+            set: {
+                siteRules[domain] = $0
+                if $0 != nil && !domainOrder.contains(domain) { domainOrder.insert(domain, at: 0) }
+                save()
+            }
+        )
     }
 
     private func addLink() {
@@ -182,13 +271,9 @@ struct RulesEditorView: View {
             return
         }
         linkError = nil
-        if let index = domainRules.firstIndex(where: { $0.domain == domain }) {
-            domainRules[index].category = newCategory
-        } else {
-            domainRules.insert(DomainRule(domain: domain, category: newCategory), at: 0)
-        }
+        siteBinding(domain).wrappedValue = newCategory
+        if !sites.contains(domain) { sites.insert(domain, at: 0) }
         newLink = ""
-        save()
     }
 
     static func domain(from input: String) -> String? {
@@ -205,15 +290,18 @@ struct RulesEditorView: View {
         let entries = sampler.rules.entries
         bundleRules = Dictionary(entries.filter { $0.type == .bundle }.map { ($0.match, $0.category) },
                                  uniquingKeysWith: { first, _ in first })
-        domainRules = entries.filter { $0.type == .domain }
-            .map { DomainRule(domain: $0.match, category: $0.category) }
+        let domains = entries.filter { $0.type == .domain }
+        siteRules = Dictionary(domains.map { ($0.match, $0.category) }, uniquingKeysWith: { first, _ in first })
+        domainOrder = domains.map(\.match)
     }
 
     private func save() {
         let bundles = bundleRules
             .sorted { $0.key < $1.key }
             .map { Rule(match: $0.key, type: .bundle, category: $0.value) }
-        let domains = domainRules.map { Rule(match: $0.domain, type: .domain, category: $0.category) }
+        let domains = domainOrder.compactMap { domain in
+            siteRules[domain].map { Rule(match: domain, type: .domain, category: $0) }
+        }
         do {
             try sampler.rules.save(bundles + domains)
             saveError = nil

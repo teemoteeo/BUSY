@@ -4,8 +4,8 @@ enum Category: String, Codable, Sendable {
     case green, red, paused, unknown
     var title: String {
         switch self {
-        case .green: return "Produttiva"
-        case .red: return "Distrazione"
+        case .green: return "Verde"
+        case .red: return "Rosso"
         case .paused: return "In pausa"
         case .unknown: return "Non classificato"
         }
@@ -71,6 +71,8 @@ struct TimelineSegment: Identifiable {
     let end: Date
     let category: Category
     let name: String
+    /// Vero se `name` è un dominio, falso se è un bundle ID (entrambi hanno i punti).
+    var isSite = false
 }
 
 struct Recap {
@@ -81,7 +83,7 @@ struct Recap {
     var segments: [TimelineSegment] = []
 
     // Intervalli semiaperti [from, to). Il primo sample può precedere from.
-    // `only`: conta solo quell'app o dominio. Gli altri sample servono comunque
+    // `only`: conta solo quell'app o sito. Gli altri sample servono comunque
     // a chiudere gli intervalli, quindi il filtro va qui e non prima.
     static func aggregate(_ samples: [Session], from: Date, to: Date, only: String? = nil,
                           calendar: Calendar = .current) -> Recap {
@@ -106,11 +108,13 @@ struct Recap {
             let start = max(from, sample.timestamp)
             let end = min(to, index + 1 < ordered.count ? ordered[index + 1].timestamp : to)
             let name = sample.category == .paused ? "Pausa" : (sample.domain ?? sample.bundleID)
-            guard start < end, only == nil || only == name else { continue }
+            // Per un sito vale anche ogni sottodominio: youtube.com include m.youtube.com.
+            guard start < end, only == nil || only == name
+                || (sample.domain != nil && name.hasSuffix("." + only!)) else { continue }
             let seconds = end.timeIntervalSince(start)
             result.totals.add(seconds, category: sample.category)
             result.segments.append(TimelineSegment(id: index, start: start, end: end,
-                category: sample.category, name: name))
+                category: sample.category, name: name, isSite: sample.domain != nil))
             // Pausa e URL illeggibili sono diagnostica, esclusa dalla classifica.
             // Le app non segnate (grigie) restano: servono per decidere cosa segnare.
             if sample.category != .paused && sample.matchedRule != Classifier.urlUnavailable {

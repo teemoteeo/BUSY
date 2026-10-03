@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        Appearance.apply()
         switchView.setCategory(sampler.currentState.category, animated: false)
         Task {
             await sampler.start()
@@ -106,6 +107,8 @@ enum MainTab: Hashable { case recap, apps, sites, settings }
 struct MainView: View {
     let sampler: Sampler
     @State var tab: MainTab
+    /// App o sito cliccato nelle Regole o nella Top 10: al posto della pagina si vede la sua scheda.
+    @State private var statsFocus: String?
 
     var body: some View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
@@ -129,13 +132,29 @@ struct MainView: View {
             // In una NSWindow creata a mano il pulsante della sidebar non funziona: via.
             .toolbar(removing: .sidebarToggle)
         } detail: {
-            switch tab {
-            case .recap: RecapView(sampler: sampler)
-            case .apps: RulesEditorView(sampler: sampler, tab: .apps)
-            case .sites: RulesEditorView(sampler: sampler, tab: .sites)
-            case .settings: SettingsView(sampler: sampler)
+            Group {
+                if let statsFocus {
+                    AppStatsView(sampler: sampler, name: statsFocus) { self.statsFocus = nil }
+                        .id(statsFocus)
+                } else {
+                    switch tab {
+                    case .recap: RecapView(sampler: sampler, openStats: openStats)
+                    case .apps: RulesEditorView(sampler: sampler, tab: .apps, openStats: openStats)
+                    case .sites: RulesEditorView(sampler: sampler, tab: .sites, openStats: openStats)
+                    case .settings: SettingsView(sampler: sampler)
+                    }
+                }
             }
+            // Liste e moduli senza il loro fondo bianco: si vede lo sfondo smorzato.
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
         }
+        // Un clic nella sidebar chiude la scheda dell'app.
+        .onChange(of: tab) { _, _ in statsFocus = nil }
+    }
+
+    private func openStats(_ name: String) {
+        statsFocus = name
     }
 
     /// Avvio del Mac (kern.boottime): l'uptime include il tempo in stop, come `uptime`.
@@ -155,8 +174,25 @@ struct MainView: View {
     }
 }
 
+/// Tema dell'app (finestra e pannello del menu), salvato tra un avvio e l'altro.
+/// "Sistema" segue Impostazioni di Sistema. Lo switch nella barra dei menu non cambia.
+enum Appearance: String, CaseIterable {
+    case system = "Sistema", light = "Chiaro", dark = "Scuro"
+    static let key = "appearance"
+
+    static func apply(_ value: Appearance? = nil) {
+        let value = value ?? Appearance(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system
+        NSApp.appearance = switch value {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 struct SettingsView: View {
     let sampler: Sampler
+    @AppStorage(Appearance.key) private var appearance: Appearance = .system
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
     @State private var defaultCategory: Category = .unknown
@@ -164,6 +200,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Aspetto", selection: $appearance) {
+                    ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .onChange(of: appearance) { _, value in Appearance.apply(value) }
+            }
             Section {
                 Toggle("Apri all'accensione del Mac", isOn: Binding(
                     get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))

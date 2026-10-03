@@ -16,6 +16,13 @@ enum Theme {
     static let red = Color(nsColor: redNS)
     static let unknown = Color.gray.opacity(0.6)
     static let paused = Color.secondary.opacity(0.35)
+    /// Fondo della finestra: nel tema chiaro un bianco appena smorzato, nello scuro
+    /// quello di sistema.
+    static let background = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .windowBackgroundColor
+            : NSColor(white: 0.955, alpha: 1)
+    })
     /// Fondo delle barre vuote.
     static let track = Color.secondary.opacity(0.12)
 
@@ -43,7 +50,7 @@ struct StatCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(category == .green ? "Verde" : "Rosso").foregroundStyle(category.color)
+            Text(category.title).foregroundStyle(category.color)
             Text(Totals.duration(seconds)).font(.title2).monospacedDigit()
             Text("\(percentage, specifier: "%.1f")% del tempo classificato")
                 .font(.caption).foregroundStyle(.secondary)
@@ -148,6 +155,30 @@ struct DayDot: View {
     }
 }
 
+// MARK: - UsageSparkline
+
+/// Una colonnina per giorno, alta in proporzione al giorno più usato della serie.
+/// I giorni senza uso restano una tacca sottile, così si vede anche quando non c'è.
+struct UsageSparkline: View {
+    let values: [TimeInterval]
+    let color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            guard !values.isEmpty else { return }
+            let longest = values.max() ?? 0
+            let step = size.width / CGFloat(values.count)
+            let barWidth = max(1, step - 1)
+            for (index, value) in values.enumerated() {
+                let height = longest > 0 && value > 0 ? max(2, size.height * CGFloat(value / longest)) : 1
+                let rect = CGRect(x: CGFloat(index) * step, y: size.height - height, width: barWidth, height: height)
+                context.fill(Path(rect), with: .color(value > 0 ? color : Theme.track))
+            }
+        }
+        .accessibilityLabel("Uso negli ultimi \(values.count) giorni")
+    }
+}
+
 // MARK: - LegendChip
 
 /// Voce secondaria (pausa, non classificato): pallino + nome + durata, senza card.
@@ -176,14 +207,7 @@ struct ActivityRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Group {
-                if let icon = AppName.icon(entry.id.name) {
-                    Image(nsImage: icon).resizable()
-                } else {
-                    Image(systemName: "globe").foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 16, height: 16)
+            ActivityIcon(name: entry.id.name).frame(width: 16, height: 16)
             Text(AppName.display(entry.id.name)).lineLimit(1).truncationMode(.middle)
                 .frame(width: nameWidth, alignment: .leading)
                 .help(entry.id.name)

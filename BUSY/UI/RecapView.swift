@@ -23,14 +23,19 @@ struct RecapView: View {
     @State private var anchor = Date()
     @State private var recap = Recap()
     @State private var errorMessage: String?
-    /// App o dominio scelto nella Top 10: tutto il Recap mostra solo quello.
-    @State private var focus: String?
+    /// Clic su un'attività della Top 10: apre la sua pagina di statistiche.
+    var openStats: (String) -> Void = { _ in }
     /// Periodo a cui appartiene `recap`. Finché non coincide con quello scelto, grafici
     /// e timeline restano invisibili: altrimenti per un attimo disegnano i dati del
     /// periodo precedente nel formato nuovo (es. un mese solo come barra gigante).
     @State private var loadedKey: String?
-    private var key: String { "\(period.rawValue)-\(interval.start.timeIntervalSince1970)-\(focus ?? "")" }
+    private var key: String { "\(period.rawValue)-\(interval.start.timeIntervalSince1970)" }
     @State private var daySegments: [TimelineSegment] = []
+
+    init(sampler: Sampler, openStats: @escaping (String) -> Void = { _ in }) {
+        self.sampler = sampler
+        self.openStats = openStats
+    }
 
     private static let italian = Locale(identifier: "it_IT")
     private var calendar: Calendar {
@@ -52,21 +57,15 @@ struct RecapView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 10) {
-                        if let focus {
-                            appHeader(focus)
-                        } else {
-                            HStack(alignment: .top, spacing: 32) {
-                                StatCard(category: .green, seconds: recap.totals.green,
-                                         percentage: recap.totals.percentage(.green))
-                                StatCard(category: .red, seconds: recap.totals.red,
-                                         percentage: recap.totals.percentage(.red))
-                            }
+                        HStack(alignment: .top, spacing: 32) {
+                            StatCard(category: .green, seconds: recap.totals.green,
+                                     percentage: recap.totals.percentage(.green))
+                            StatCard(category: .red, seconds: recap.totals.red,
+                                     percentage: recap.totals.percentage(.red))
                         }
-                        if focus == nil {
-                            HStack(spacing: 16) {
-                                LegendChip(category: .paused, seconds: recap.totals.paused)
-                                LegendChip(category: .unknown, seconds: recap.totals.unclassified)
-                            }
+                        HStack(spacing: 16) {
+                            LegendChip(category: .paused, seconds: recap.totals.paused)
+                            LegendChip(category: .unknown, seconds: recap.totals.unclassified)
                         }
                     }
                     if let errorMessage { Text(errorMessage).foregroundStyle(Theme.red) }
@@ -75,13 +74,13 @@ struct RecapView: View {
                             .opacity(loadedKey == key ? 1 : 0)
                     }
                     breakdown.opacity(loadedKey == key ? 1 : 0)
-                    if focus == nil { section("Top 10 per tempo speso") {
+                    section("Top 10 per tempo speso") {
                         if recap.activities.isEmpty {
                             Text("Nessuna sessione nell'intervallo.").foregroundStyle(.secondary)
                         }
                         VStack(spacing: Theme.rowSpacing) {
                             ForEach(Array(recap.activities.prefix(10))) { entry in
-                                Button { focus = entry.id.name } label: {
+                                Button { openStats(entry.id.name) } label: {
                                     ActivityRow(entry: entry, longest: recap.activities.first?.seconds ?? 1,
                                                 nameWidth: 180)
                                     .contentShape(Rectangle())
@@ -90,7 +89,7 @@ struct RecapView: View {
                                 .help("Statistiche di \(AppName.display(entry.id.name))")
                             }
                         }
-                    } }
+                    }
                 }
             }
         }
@@ -107,49 +106,6 @@ struct RecapView: View {
         }
         .onReceive(sampler.$isReady.dropFirst()) { _ in Task { await refresh() } }
         .onReceive(sampler.$rulesVersion.dropFirst()) { _ in Task { await refresh() } }
-    }
-
-    // MARK: Singola app
-
-    private func appHeader(_ name: String) -> some View {
-        let category = recap.activities.first?.id.category
-        let used = recap.totals.recorded - recap.totals.paused
-        let usedDays = recap.days.filter { $0.totals.recorded - $0.totals.paused > 0 }.count
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Group {
-                    if let icon = AppName.icon(name) { Image(nsImage: icon).resizable() }
-                    else { Image(systemName: "globe").resizable().foregroundStyle(.secondary) }
-                }
-                .frame(width: 32, height: 32)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(AppName.display(name)).font(.title3.bold())
-                    if let category {
-                        Text(category == .green ? "Verde" : category == .red ? "Rosso" : category.title)
-                            .font(.caption).foregroundStyle(category.color)
-                    }
-                }
-                Spacer()
-                Button("Tutte le app") { focus = nil }.buttonStyle(.link)
-            }
-            HStack(alignment: .top, spacing: 32) {
-                stat("Totale", Totals.duration(used))
-                if period == .day {
-                    stat("Prima volta", recap.segments.first.map { $0.start.formatted(date: .omitted, time: .shortened) } ?? "—")
-                    stat("Ultima volta", recap.segments.last.map { $0.end.formatted(date: .omitted, time: .shortened) } ?? "—")
-                } else {
-                    stat("Media nei giorni d'uso", Totals.duration(usedDays > 0 ? used / Double(usedDays) : 0))
-                    stat("Giorni d'uso", "\(usedDays) su \(recap.days.count)")
-                }
-            }
-        }
-    }
-
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).foregroundStyle(.secondary)
-            Text(value).font(.title2).monospacedDigit()
-        }
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -323,8 +279,7 @@ struct RecapView: View {
         let requestedKey = key
         guard requested.start < end else { recap = Recap(); loadedKey = requestedKey; return }
         do {
-            let requestedFocus = focus
-            let result = try await sampler.recap(from: requested.start, to: end, only: requestedFocus)
+            let result = try await sampler.recap(from: requested.start, to: end)
             // Righe 06→06 della settimana: dalle 06 del primo giorno alle 06 dopo l'ultimo.
             let window: DateInterval? = period == .week
                 ? DateInterval(start: DayBar.window(for: requested.start).start,
@@ -332,11 +287,10 @@ struct RecapView: View {
                 : nil
             var barSegments: [TimelineSegment] = []
             if let window, window.start < min(window.end, now) {
-                barSegments = try await sampler.recap(from: window.start, to: min(window.end, now),
-                                                      only: requestedFocus).segments
+                barSegments = try await sampler.recap(from: window.start, to: min(window.end, now)).segments
             }
             // Una risposta lenta non deve sovrascrivere il periodo appena selezionato.
-            guard requested == interval, requestedFocus == focus else { return }
+            guard requested == interval else { return }
             recap = result
             loadedKey = requestedKey
             daySegments = barSegments
@@ -393,7 +347,7 @@ private struct MonthChart: View {
             }
             .chartXAxis {
                 AxisMarks(values: .stride(by: .month)) { _ in
-                    AxisValueLabel(format: .dateTime.month(.narrow), centered: true)
+                    AxisValueLabel(format: .dateTime.month(.abbreviated), centered: true)
                         .font(.caption2)
                         // Color.primary, non .primary: nel grafico .primary prende il colore d'accento (blu).
                         .foregroundStyle(Color.primary)
@@ -444,5 +398,61 @@ enum AppName {
             .map { NSWorkspace.shared.icon(forFile: $0.path) }
         icons[identifier] = icon
         return icon
+    }
+}
+
+/// Icona di un'attività: l'icona dell'app; per un sito la sua favicon, altrimenti un globo.
+struct ActivityIcon: View {
+    let name: String
+    @State private var favicon: NSImage?
+
+    var body: some View {
+        Group {
+            if let icon = AppName.icon(name) ?? favicon {
+                Image(nsImage: icon).resizable().interpolation(.high)
+            } else {
+                Image(systemName: "globe").resizable().foregroundStyle(.secondary)
+            }
+        }
+        .task(id: name) {
+            if AppName.icon(name) == nil { favicon = await Favicon.load(name) }
+        }
+    }
+}
+
+/// Favicon dei siti, chiesta solo al sito stesso (nessun servizio esterno vede quali
+/// siti visiti) e poi tenuta su disco in Application Support/BUSY/favicons.
+enum Favicon {
+    @MainActor private static var memory: [String: NSImage?] = [:]
+    private static let folder = AppPaths.directory.appendingPathComponent("favicons", isDirectory: true)
+
+    @MainActor static func load(_ domain: String) async -> NSImage? {
+        if let cached = memory[domain] { return cached }
+        let file = folder.appendingPathComponent(domain)
+        var data = try? Data(contentsOf: file)
+        if data == nil, let downloaded = await download(domain) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? downloaded.write(to: file, options: .atomic)
+            data = downloaded
+        }
+        // ponytail: un sito senza favicon (o un bundle ID di un'app disinstallata) si
+        // riprova a ogni avvio; salvare anche i fallimenti se diventano tanti.
+        let image = data.flatMap(NSImage.init(data:))
+        memory[domain] = image
+        return image
+    }
+
+    private static func download(_ domain: String) async -> Data? {
+        guard domain.contains("."), !domain.contains("/"), !domain.contains(":") else { return nil }
+        // Prima l'icona grande per iOS (nitida), poi la classica favicon.ico.
+        for path in ["apple-touch-icon.png", "favicon.ico"] {
+            guard let url = URL(string: "https://\(domain)/\(path)") else { continue }
+            let request = URLRequest(url: url, timeoutInterval: 5)
+            if let (data, response) = try? await URLSession.shared.data(for: request),
+               (response as? HTTPURLResponse)?.statusCode == 200, NSImage(data: data) != nil {
+                return data
+            }
+        }
+        return nil
     }
 }
