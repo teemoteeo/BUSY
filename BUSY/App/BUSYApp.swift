@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let popover = NSPopover()
     private var mainWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
+    /// Vero solo al primo avvio, finché la procedura guidata è aperta.
+    private var onboarding = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: StatusSwitchView.itemWidth)
@@ -54,8 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         switchView.setCategory(sampler.currentState.category, animated: false)
         Task {
             await sampler.start()
-            // Primo avvio: si parte dalla scelta rapida delle app.
-            if sampler.rules.isFirstRun { openWindow(tab: .apps) }
+            // Solo al primo avvio: la procedura guidata. Chiusa la finestra, non torna più.
+            if sampler.rules.isFirstRun {
+                onboarding = true
+                openWindow()
+            }
         }
     }
 
@@ -75,9 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if mainWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 860, height: 760),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                 backing: .buffered, defer: false)
             window.title = "BUSY"
+            // Come le app Apple con sidebar: barra unificata, sidebar fino in cima sotto i
+            // pulsanti della finestra, angoli e margini di sistema.
+            window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.setContentSize(NSSize(width: 860, height: 760))
@@ -86,11 +94,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Vista nuova a ogni apertura (riparte da "Oggi" e rilegge le regole).
         if mainWindow?.contentViewController == nil || tab != nil {
-            mainWindow?.contentViewController = NSHostingController(
-                rootView: MainView(sampler: sampler, tab: tab ?? .recap))
+            let root = onboarding
+                ? AnyView(OnboardingView(sampler: sampler) { [weak self] in
+                    self?.onboarding = false
+                    self?.openWindow(tab: .recap)
+                })
+                : AnyView(MainView(sampler: sampler, tab: tab ?? .recap))
+            let host = NSHostingController(rootView: root)
+            // Il titolo della pagina e la barra degli strumenti passano alla finestra.
+            host.sceneBridgingOptions = [.title, .toolbars]
+            mainWindow?.contentViewController = host
         }
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        sampler.terminate()
     }
 
     // Una finestra chiusa resta viva (isReleasedWhenClosed = false) e la sua vista
@@ -98,11 +118,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // ridisegno di un Picker segmentato perde memoria (~300 MB in 3 giorni).
     // La vista si ricrea comunque a ogni apertura.
     func windowWillClose(_ notification: Notification) {
+        onboarding = false
         (notification.object as? NSWindow)?.contentViewController = nil
     }
 }
 
-enum MainTab: Hashable { case recap, apps, sites, settings }
+enum MainTab: Hashable {
+    case recap, apps, sites, settings
+    var title: String {
+        switch self {
+        case .recap: return "Recap"
+        case .apps: return "App"
+        case .sites: return "Siti"
+        case .settings: return "Impostazioni"
+        }
+    }
+}
 
 struct MainView: View {
     let sampler: Sampler
@@ -111,6 +142,7 @@ struct MainView: View {
     @State private var statsFocus: String?
 
     var body: some View {
+        let openStats: (String) -> Void = { statsFocus = $0 }
         NavigationSplitView(columnVisibility: .constant(.all)) {
             List(selection: $tab) {
                 Label("Recap", systemImage: "chart.bar.fill").tag(MainTab.recap)
@@ -148,13 +180,10 @@ struct MainView: View {
             // Liste e moduli senza il loro fondo bianco: si vede lo sfondo smorzato.
             .scrollContentBackground(.hidden)
             .background(Theme.background)
+            .navigationTitle(statsFocus.map(AppName.display) ?? tab.title)
         }
         // Un clic nella sidebar chiude la scheda dell'app.
         .onChange(of: tab) { _, _ in statsFocus = nil }
-    }
-
-    private func openStats(_ name: String) {
-        statsFocus = name
     }
 
     /// Avvio del Mac (kern.boottime): l'uptime include il tempo in stop, come `uptime`.
@@ -207,8 +236,11 @@ struct SettingsView: View {
                 .onChange(of: appearance) { _, value in Appearance.apply(value) }
             }
             Section {
-                Toggle("Apri all'accensione del Mac", isOn: Binding(
-                    get: { launchAtLogin }, set: { setLaunchAtLogin($0) }))
+                // Secondo Text nell'etichetta: sottotitolo sotto il nome, come in Impostazioni di Sistema.
+                Toggle(isOn: Binding(get: { launchAtLogin }, set: { setLaunchAtLogin($0) })) {
+                    Text("Apri all'accensione del Mac")
+                    Text("Importante: BUSY registra solo mentre è aperta. Attivala all'accensione per avere la cronologia completa, senza buchi.")
+                }
                 if let loginError { Text(loginError).font(.caption).foregroundStyle(Theme.red) }
             }
             Section {
@@ -266,9 +298,6 @@ final class StatusSwitchView: NSView {
     private static let trackSize = CGSize(width: 32, height: 16)
     private static let knobSize = CGSize(width: 20, height: 14)
     private static let inset: CGFloat = 1
-    private static let brightGreen = Theme.greenNS
-    private static let brightRed = Theme.redNS
-    private static let neutral = Theme.neutralNS
 
     private let track = CALayer()
     private let knob = CAGradientLayer()
@@ -333,9 +362,9 @@ final class StatusSwitchView: NSView {
         let color: NSColor
         let x: CGFloat
         switch category {
-        case .green: color = Self.brightGreen; x = maxX
-        case .red: color = Self.brightRed; x = minX
-        case .paused, .unknown: color = Self.neutral; x = (minX + maxX) / 2
+        case .green: color = Theme.greenNS; x = maxX
+        case .red: color = Theme.redNS; x = minX
+        case .paused, .unknown: color = Theme.neutralNS; x = (minX + maxX) / 2
         }
         track.backgroundColor = color.cgColor
         knob.bounds = CGRect(origin: .zero, size: Self.knobSize)

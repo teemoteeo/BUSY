@@ -39,7 +39,7 @@ struct AppStatsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading) {
                 Button(action: back) { Label("Indietro", systemImage: "chevron.left") }
                     .buttonStyle(.link)
                 header
@@ -54,7 +54,7 @@ struct AppStatsView: View {
                     ProgressView().frame(maxWidth: .infinity)
                 }
             }
-            .padding(20)
+            .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 620, minHeight: 580)
@@ -89,16 +89,16 @@ struct AppStatsView: View {
         let week = stats.days.filter { $0.id >= weekStart }.reduce(0) { $0 + Stats.used($1.totals) }
         let today = stats.days.last.map { Stats.used($0.totals) } ?? 0
         let average = stats.usedDays > 0 ? stats.total / Double(stats.usedDays) : 0
-        return VStack(alignment: .leading, spacing: 22) {
+        return VStack(alignment: .leading) {
             HStack(alignment: .top, spacing: 32) {
                 stat("Oggi", Totals.duration(today))
                 stat("Questa settimana", Totals.duration(week))
                 stat("Ultimi 30 giorni", Totals.duration(stats.total))
                 stat("Media al giorno", Totals.duration(average), note: "nei \(stats.usedDays) giorni d'uso")
             }
-            section("Ultimi 30 giorni") { DailyChart(days: stats.days) }
-            section("Quando la usi") { HourChart(hours: stats.hours, color: color) }
-            section("Sessioni") {
+            TitledSection("Ultimi 30 giorni") { DailyChart(days: stats.days) }
+            TitledSection("Quando la usi") { HourChart(hours: stats.hours, color: color) }
+            TitledSection("Sessioni") {
                 HStack(alignment: .top, spacing: 32) {
                     stat("Sessioni", "\(stats.sessions)", small: true)
                     stat("Durata media", Totals.duration(stats.sessions > 0 ? stats.total / Double(stats.sessions) : 0), small: true)
@@ -124,14 +124,6 @@ struct AppStatsView: View {
             Text(value).font(small ? .title3 : .title2).monospacedDigit()
             if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
         }
-    }
-
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Dati

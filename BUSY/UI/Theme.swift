@@ -227,7 +227,8 @@ struct ActivityRow: View {
 
 // MARK: - CategoryPill
 
-/// Una sola pill per riga: piena del colore della categoria, grigia se non segnata.
+/// Una sola pill per riga: pulsante di sistema pieno del colore della categoria,
+/// semplice se non segnata.
 /// Il click cicla verde → rosso → nessuna (solo verde ↔ rosso se `allowsNone` è falso);
 /// il menu contestuale sceglie direttamente. Niente Picker segmentato: su macOS 26
 /// perde memoria a ogni ridisegno.
@@ -244,18 +245,17 @@ struct CategoryPill: View {
     }
 
     var body: some View {
-        let tint = selection?.color
-        Button { selection = next } label: {
-            Text(selection?.title ?? "Non segnata")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint == nil ? Color.secondary : Color.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .frame(minWidth: 92)
-                .background(Capsule().fill(tint ?? Theme.track))
-                .contentShape(Capsule())
+        let button = Button { selection = next } label: {
+            Text(selection?.title ?? "Non segnata").frame(minWidth: 72)
         }
-        .buttonStyle(.plain)
+        Group {
+            if let color = selection?.color {
+                button.buttonStyle(.borderedProminent).tint(color)
+            } else {
+                button.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
         .contextMenu {
             Button(Category.green.title) { selection = .green }
             Button(Category.red.title) { selection = .red }
@@ -266,11 +266,23 @@ struct CategoryPill: View {
     }
 }
 
-extension CategoryPill {
-    /// Variante senza "non segnata" per valori non opzionali (regole dei siti).
-    init(category: Binding<Category>) {
-        self.init(selection: Binding(get: { category.wrappedValue },
-                                     set: { if let value = $0 { category.wrappedValue = value } }),
-                  allowsNone: false)
+// MARK: - TitledSection
+
+/// Sezione con titolo in grassetto sopra il contenuto, a tutta larghezza.
+struct TitledSection<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text(title).font(.headline)
+            content
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

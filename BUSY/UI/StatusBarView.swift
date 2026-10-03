@@ -109,11 +109,9 @@ struct CompactTimelineView: View {
     var height: CGFloat = 22
     var period: RecapPeriod = .day
 
-    private static let gapThreshold: TimeInterval = 5 * 60
-
     private static func gapThreshold(_ period: RecapPeriod) -> TimeInterval {
         switch period {
-        case .day: return gapThreshold
+        case .day: return 5 * 60
         case .week: return 6 * 3600
         case .month: return 8 * 3600
         case .year: return 36 * 3600
@@ -130,8 +128,6 @@ struct CompactTimelineView: View {
     }
     private static let separatorWidth: CGFloat = 5
     private static let columnWidth: CGFloat = 3
-    private static let green = Theme.green
-    private static let red = Theme.red
 
     @State private var hoverText: String?
 
@@ -257,9 +253,9 @@ struct CompactTimelineView: View {
     private func draw(_ layout: Layout, in context: inout GraphicsContext, size: CGSize) {
         context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Theme.track))
         for column in layout.columns {
-            let parts: [(TimeInterval, Color)] = [(column.red, Self.red),
+            let parts: [(TimeInterval, Color)] = [(column.red, Theme.red),
                                                   (column.unknown, Theme.unknown),
-                                                  (column.green, Self.green)]
+                                                  (column.green, Theme.green)]
             let sum = parts.reduce(0) { $0 + $1.0 }
             guard sum > 0 else { continue }
             // Altezza minima 2 pt per ogni quota presente, poi si riscala su tutta l'altezza.

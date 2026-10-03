@@ -14,10 +14,11 @@ final class Database: @unchecked Sendable {
     private var handle: OpaquePointer?
     private var acceptsSamples = true
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    private static let lastSampleSQL = "SELECT * FROM samples ORDER BY timestamp DESC, id DESC LIMIT 1"
 
-    init(url: URL? = nil) async throws {
+    init() async throws {
         try await perform {
-            let location = url ?? AppPaths.database
+            let location = AppPaths.database
             try FileManager.default.createDirectory(at: location.deletingLastPathComponent(),
                                                    withIntermediateDirectories: true)
             try self.check(sqlite3_open_v2(location.path, &self.handle,
@@ -35,11 +36,6 @@ final class Database: @unchecked Sendable {
                 CREATE INDEX IF NOT EXISTS idx_samples_timestamp ON samples(timestamp);
                 """)
         }
-    }
-
-    deinit {
-        let connection = handle
-        queue.async { if let connection { sqlite3_close_v2(connection) } }
     }
 
     // L'accodamento avviene sul main actor per rispettare l'ordine delle
@@ -67,7 +63,7 @@ final class Database: @unchecked Sendable {
     private func insertOnQueue(_ session: Session) throws {
         try execute("BEGIN IMMEDIATE")
         do {
-            let last = try query("SELECT * FROM samples ORDER BY timestamp DESC, id DESC LIMIT 1").first
+            let last = try query(Self.lastSampleSQL).first
             if last.map({ !session.hasSameActivity(as: $0) }) ?? true {
                 let statement = try prepare("""
                     INSERT INTO samples(timestamp, bundle_id, domain, category, matched_rule)
@@ -93,7 +89,7 @@ final class Database: @unchecked Sendable {
 
     func lastSample() async throws -> Session? {
         try await perform {
-            try self.query("SELECT * FROM samples ORDER BY timestamp DESC, id DESC LIMIT 1").first
+            try self.query(Self.lastSampleSQL).first
         }
     }
 

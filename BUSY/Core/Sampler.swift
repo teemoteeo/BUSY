@@ -32,7 +32,6 @@ final class Sampler: ObservableObject {
     let rules = Rules()
     private var database: Database?
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var terminationObserver: NSObjectProtocol?
     private var browserTimer: Timer?
     private var idleTimer: Timer?
     private var resumeTimer: Timer?
@@ -94,11 +93,6 @@ final class Sampler: ObservableObject {
             $0.inactiveSession = false
             $0.sample()
         }
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.terminate() }
-        }
     }
 
     private func observeWorkspace(_ name: Notification.Name,
@@ -154,14 +148,9 @@ final class Sampler: ObservableObject {
         guard !suspended else { return }
         let idle = CGEventSource.secondsSinceLastEventType(
             .combinedSessionState, eventType: Self.anyInputEvent)
-        handleIdle(idle, at: Date())
-    }
-
-    private func handleIdle(_ idle: TimeInterval, at date: Date) {
-        guard !suspended else { return }
         guard idle.isFinite, idle >= 0 else { return }
         if idle >= Self.idleThreshold && currentState.category != .paused {
-            pause(at: date.addingTimeInterval(-idle))
+            pause(at: Date().addingTimeInterval(-idle))
         } else if idle < Self.idleThreshold && currentState.category == .paused {
             // Il tick misura solo l'idle. La ripresa usa il normale task di campionamento.
             sample()
@@ -194,7 +183,7 @@ final class Sampler: ObservableObject {
         }
     }
 
-    private func terminate() {
+    func terminate() {
         terminating = true
         generation += 1
         sampleTask?.cancel()
@@ -343,16 +332,5 @@ final class Sampler: ObservableObject {
     private func stopResumeTimer() {
         resumeTimer?.invalidate()
         resumeTimer = nil
-    }
-
-    deinit {
-        rulesWatcher?.cancel()
-        sampleTask?.cancel()
-        pauseTask?.cancel()
-        browserTimer?.invalidate()
-        idleTimer?.invalidate()
-        resumeTimer?.invalidate()
-        for token in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(token) }
-        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
     }
 }

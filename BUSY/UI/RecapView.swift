@@ -52,10 +52,10 @@ struct RecapView: View {
     private var isCurrentPeriod: Bool { interval.contains(Date()) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading) {
             toolbar
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading) {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .top, spacing: 32) {
                             StatCard(category: .green, seconds: recap.totals.green,
@@ -69,12 +69,12 @@ struct RecapView: View {
                         }
                     }
                     if let errorMessage { Text(errorMessage).foregroundStyle(Theme.red) }
-                    section("Timeline") {
+                    TitledSection("Timeline") {
                         CompactTimelineView(segments: recap.segments, height: 28, period: period)
                             .opacity(loadedKey == key ? 1 : 0)
                     }
                     breakdown.opacity(loadedKey == key ? 1 : 0)
-                    section("Top 10 per tempo speso") {
+                    TitledSection("Top 10 per tempo speso") {
                         if recap.activities.isEmpty {
                             Text("Nessuna sessione nell'intervallo.").foregroundStyle(.secondary)
                         }
@@ -93,7 +93,7 @@ struct RecapView: View {
                 }
             }
         }
-        .padding(20)
+        .padding()
         .frame(minWidth: 620, minHeight: 580)
         .environment(\.locale, Self.italian)
         .task(id: key) {
@@ -106,15 +106,6 @@ struct RecapView: View {
         }
         .onReceive(sampler.$isReady.dropFirst()) { _ in Task { await refresh() } }
         .onReceive(sampler.$rulesVersion.dropFirst()) { _ in Task { await refresh() } }
-    }
-
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.headline)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 4)
     }
 
     // MARK: Toolbar
@@ -179,9 +170,9 @@ struct RecapView: View {
         case .day:
             EmptyView()
         case .month:
-            section("Per giorno") { monthCalendar }
+            TitledSection("Per giorno") { monthCalendar }
         case .week:
-            section("Per giorno") {
+            TitledSection("Per giorno") {
                 VStack(spacing: 6) {
                     dayRowLayout(Text(""), DayPartLabels(), green: "Verde", red: "Rosso")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -202,7 +193,7 @@ struct RecapView: View {
                 }
             }
         case .year:
-            section("Per mese") {
+            TitledSection("Per mese") {
                 MonthChart(rows: monthTotals.map { ($0.month, $0.totals) }) { open(.month, at: $0) }
             }
         }

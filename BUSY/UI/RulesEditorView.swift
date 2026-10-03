@@ -11,6 +11,8 @@ struct RulesEditorView: View {
     let tab: Tab
     /// Clic su un'app o un sito: apre le sue statistiche nel Recap.
     var openStats: (String) -> Void = { _ in }
+    /// Siti mostrati anche senza regola né visite (procedura guidata: i più comuni).
+    var suggestedSites: [String] = []
 
     enum Tab { case apps, sites }
 
@@ -45,7 +47,7 @@ struct RulesEditorView: View {
     @State private var siteUsage: [String: [TimeInterval]] = [:]
     @State private var loaded = false
     @State private var newLink = ""
-    @State private var newCategory: Category = .red
+    @State private var newCategory: Category? = .red
     @State private var linkError: String?
     @State private var saveError: String?
     @State private var rulesError: String?
@@ -55,7 +57,7 @@ struct RulesEditorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading) {
             switch tab {
             case .apps: appsTab
             case .sites: sitesTab
@@ -64,8 +66,8 @@ struct RulesEditorView: View {
                 Text("Regole: \(error)").font(.caption).foregroundStyle(Theme.red)
             }
         }
-        .padding(20)
-        .frame(minWidth: 520, minHeight: 560)
+        .padding()
+        .frame(minWidth: 520)
         .onAppear(perform: load)
         .onReceive(sampler.$rulesError) { rulesError = $0 }
         .task {
@@ -88,7 +90,7 @@ struct RulesEditorView: View {
                 bySite[key] = zip(bySite[key] ?? Array(repeating: 0, count: days.count), days).map(+)
             }
             siteUsage = bySite
-            sites = Set(domainOrder).union(bySite.keys).sorted { a, b in
+            sites = Set(domainOrder).union(bySite.keys).union(suggestedSites).sorted { a, b in
                 let ua = Self.total(bySite[a]), ub = Self.total(bySite[b])
                 if ua != ub { return ua > ub }
                 return a < b
@@ -170,15 +172,7 @@ struct RulesEditorView: View {
 
     private var appsTab: some View {
         let searched = searchedApps
-        return VStack(alignment: .leading, spacing: 10) {
-            if sampler.rules.isFirstRun {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Benvenuto in BUSY").font(.headline)
-                    Text("Segna in verde le app con cui lavori e in rosso quelle che ti distraggono: ogni clic sulla pill cambia colore. Puoi farlo anche più tardi, da qui.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                .padding(.bottom, 4)
-            }
+        return VStack(alignment: .leading) {
             TextField("Cerca app", text: $search).textFieldStyle(.roundedBorder)
             HStack(spacing: 6) {
                 ForEach(Filter.allCases) { option in
@@ -197,25 +191,13 @@ struct RulesEditorView: View {
         }
     }
 
+    /// Pulsanti a interruttore di sistema: forma e stato selezionato come nelle app Apple.
     private func filterChip(_ option: Filter, count: Int) -> some View {
-        let selected = filter == option
-        let tint: Color = switch option {
-        case .green: Theme.green
-        case .red: Theme.red
-        default: .secondary
+        Toggle(isOn: Binding(get: { filter == option }, set: { if $0 { filter = option } })) {
+            Text("\(option.rawValue) \(count)").monospacedDigit()
         }
-        return Button { filter = option } label: {
-            HStack(spacing: 4) {
-                Text(option.rawValue)
-                Text("\(count)").monospacedDigit().foregroundStyle(selected ? tint : .secondary)
-            }
-            .font(.caption.weight(selected ? .semibold : .regular))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(selected ? tint.opacity(0.18) : Theme.track))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
+        .toggleStyle(.button)
+        .controlSize(.small)
     }
 
     private func bundleBinding(_ bundleID: String) -> Binding<Category?> {
@@ -228,12 +210,12 @@ struct RulesEditorView: View {
     // MARK: Siti
 
     private var sitesTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading) {
             HStack {
                 TextField("Incolla un link, es. https://www.youtube.com/…", text: $newLink)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addLink)
-                CategoryPill(category: $newCategory)
+                CategoryPill(selection: $newCategory, allowsNone: false)
                 Button("Aggiungi", action: addLink)
                     .disabled(newLink.trimmingCharacters(in: .whitespaces).isEmpty)
             }
